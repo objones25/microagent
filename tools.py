@@ -11,37 +11,67 @@ from firecrawl import FirecrawlApp
 TOOL_SCHEMAS = [
     {
         "name": "read_file",
-        "description": "Read the contents of a file in the task directory.",
+        "description": (
+            "Read the full text content of a file inside the task directory. "
+            "Use this to read solution_test.py before writing any implementation, "
+            "or to re-read solution.py when debugging failures. "
+            "Returns an error string if the file does not exist."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to read (relative or absolute within task dir)"}
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "File path relative to the task directory, e.g. 'solution_test.py' or 'solution.py'. "
+                        "Absolute paths are also accepted as long as they resolve inside the task directory."
+                    ),
+                }
             },
             "required": ["path"],
         },
     },
     {
         "name": "write_file",
-        "description": "Write content to a file in the task directory.",
+        "description": (
+            "Write (or overwrite) a file in the task directory with the given content. "
+            "Use this to write your implementation to solution.py. "
+            "Do NOT use this to write to solution_test.py — tests are locked. "
+            "Always provide the complete file content; partial updates are not supported."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to write (relative or absolute within task dir)"},
-                "content": {"type": "string", "description": "Full file content to write"},
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to task directory, e.g. 'solution.py'.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete file content to write. Must be valid, importable Python.",
+                },
             },
             "required": ["path", "content"],
         },
     },
     {
         "name": "run_subprocess",
-        "description": "Run pytest to check the implementation. Command must start with 'pytest'.",
+        "description": (
+            "Run pytest against the test file and return the full output (stdout + stderr). "
+            "Always run this after writing solution.py to verify correctness. "
+            "Only pytest commands are allowed — any other command will be rejected. "
+            "Example: ['pytest', 'solution_test.py', '-v']"
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Command list, e.g. ['pytest', 'solution_test.py', '-v']",
+                    "description": (
+                        "Command as a list of strings. Must start with 'pytest'. "
+                        "Example: ['pytest', 'solution_test.py', '-v', '--tb=short']"
+                    ),
                 }
             },
             "required": ["command"],
@@ -50,20 +80,22 @@ TOOL_SCHEMAS = [
     {
         "name": "context7_docs",
         "description": (
-            "Look up up-to-date documentation for any programming library. "
-            "Resolves the library name to a Context7 ID, then fetches relevant docs. "
-            "Use this before writing code when you need accurate API signatures or examples."
+            "Fetch up-to-date documentation and code examples for a programming library. "
+            "Use this when you need accurate API signatures, method names, or usage patterns "
+            "before writing code that uses an external library. "
+            "Prefer this over firecrawl_search for library-specific API questions. "
+            "Example: library='requests', query='how to set headers and timeout on a GET request'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "library": {
                     "type": "string",
-                    "description": "Library name, e.g. 'anthropic', 'pytest', 'httpx'",
+                    "description": "The library package name as it appears on PyPI, e.g. 'requests', 'httpx', 'pytest'.",
                 },
                 "query": {
                     "type": "string",
-                    "description": "What you need to know, e.g. 'tool use agentic loop messages'",
+                    "description": "A specific question or topic to look up, e.g. 'session authentication with cookies'.",
                 },
             },
             "required": ["library", "query"],
@@ -71,23 +103,42 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "firecrawl_scrape",
-        "description": "Scrape a URL and return its content as markdown. Use to read documentation pages or web content.",
+        "description": (
+            "Scrape a specific URL and return its content as markdown. "
+            "Use when you have a known URL containing documentation, an API reference, or a code example. "
+            "Prefer context7_docs for library API questions. "
+            "Use firecrawl_search instead when you don't have a specific URL."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "The URL to scrape"},
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to scrape, e.g. 'https://docs.python.org/3/library/pathlib.html'.",
+                },
             },
             "required": ["url"],
         },
     },
     {
         "name": "firecrawl_search",
-        "description": "Search the web and return results with scraped content. Use to find current information or examples.",
+        "description": (
+            "Search the web and return results with content snippets. "
+            "Use to find current information, code examples, or solutions when you don't have a specific URL. "
+            "Prefer context7_docs for library API questions — it returns more structured docs."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "limit": {"type": "integer", "description": "Max results to return (default 5)", "default": 5},
+                "query": {
+                    "type": "string",
+                    "description": "Search query, e.g. 'python requests library retry on failure example'.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results to return. Default 5, max 10.",
+                    "default": 5,
+                },
             },
             "required": ["query"],
         },
