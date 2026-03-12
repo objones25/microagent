@@ -18,5 +18,8 @@ wheels/
 # Task run directories
 task-*/
 
+# Eval output directories
+eval-*/
+
 # macOS
 .DS_Store
