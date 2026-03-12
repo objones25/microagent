@@ -1,0 +1,11 @@
+[project]
+name = "microagent"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.84.0",
+    "firecrawl-py>=4.18.1",
+    "pytest>=9.0.2",
+    "python-dotenv>=1.2.2",
+]
