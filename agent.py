@@ -4,13 +4,7 @@ from pathlib import Path
 
 import anthropic
 
-from prompts import (
-    TEST_GENERATION_SYSTEM,
-    TEST_GENERATION_USER,
-    IMPLEMENTATION_SYSTEM,
-    IMPLEMENTATION_USER,
-    PROMPT_MD_SECTION,
-)
+import prompts as _default_prompts
 from tools import TOOL_SCHEMAS, dispatch_tool
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -23,11 +17,13 @@ class AgentLoop:
         task_dir: Path,
         model: str = DEFAULT_MODEL,
         max_iterations: int = 10,
+        prompts_module=None,
     ) -> None:
         self.client = client
         self.task_dir = task_dir
         self.model = model
         self.max_iterations = max_iterations
+        self._prompts = prompts_module if prompts_module is not None else _default_prompts
 
     # ------------------------------------------------------------------
     # Phase 1: generate locked test file
@@ -38,11 +34,11 @@ class AgentLoop:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
-            system=TEST_GENERATION_SYSTEM,
+            system=self._prompts.TEST_GENERATION_SYSTEM,
             messages=[
                 {
                     "role": "user",
-                    "content": TEST_GENERATION_USER.format(user_prompt=user_prompt),
+                    "content": self._prompts.TEST_GENERATION_USER.format(user_prompt=user_prompt),
                 }
             ],
         )
@@ -60,11 +56,11 @@ class AgentLoop:
         prompt_md_path = self.task_dir / "solution.prompt.md"
         prompt_md_section = ""
         if prompt_md_path.exists():
-            prompt_md_section = PROMPT_MD_SECTION.format(
+            prompt_md_section = self._prompts.PROMPT_MD_SECTION.format(
                 prompt_md=prompt_md_path.read_text()
             )
 
-        user_content = IMPLEMENTATION_USER.format(
+        user_content = self._prompts.IMPLEMENTATION_USER.format(
             user_prompt=user_prompt,
             test_content=test_content,
             prompt_md_section=prompt_md_section,
@@ -78,7 +74,7 @@ class AgentLoop:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=8096,
-                system=IMPLEMENTATION_SYSTEM,
+                system=self._prompts.IMPLEMENTATION_SYSTEM,
                 tools=TOOL_SCHEMAS,
                 messages=messages,
             )
@@ -154,23 +150,24 @@ class AgentLoop:
     # Orchestrator
     # ------------------------------------------------------------------
 
-    def run(self, user_prompt: str) -> None:
+    def run(self, user_prompt: str, auto_approve: bool = False) -> None:
         self.task_dir.mkdir(parents=True, exist_ok=True)
 
         # Phase 1
         test_content = self.generate_tests(user_prompt)
 
-        # Show tests, wait for approval
+        # Show tests, optionally wait for approval
         print("\n" + "=" * 60)
         print("GENERATED TESTS (solution_test.py):")
         print("=" * 60)
         print(test_content)
         print("=" * 60)
-        try:
-            input("\nPress Enter to start implementation, or Ctrl+C to abort...\n")
-        except KeyboardInterrupt:
-            print("\nAborted.")
-            sys.exit(0)
+        if not auto_approve:
+            try:
+                input("\nPress Enter to start implementation, or Ctrl+C to abort...\n")
+            except KeyboardInterrupt:
+                print("\nAborted.")
+                sys.exit(0)
 
         # Phase 2
         print("Starting implementation loop...", flush=True)
