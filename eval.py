@@ -31,7 +31,7 @@ load_dotenv(Path(__file__).parent / ".env")
 import anthropic
 
 import db
-from agent import AgentLoop, load_prompts, _RETRYABLE
+from agent import AgentLoop, AgentConfig, load_prompts, _RETRYABLE
 from logger import RunMetrics, setup_logging, save_metrics
 
 
@@ -41,14 +41,9 @@ from logger import RunMetrics, setup_logging, save_metrics
 
 def run_task(
     client: anthropic.Anthropic,
-    task: str,
+    task: "db.Task",
     task_dir: Path,
-    max_iterations: int,
-    prompts_dict: dict,
-    prompts_version: str,
-    allow_test_revision: bool = False,
-    auto_approve_revision: bool = False,
-    min_coverage: float = 0.0,
+    config: AgentConfig,
     conn=None,
     eval_run_id: int | None = None,
 ) -> RunMetrics:
@@ -58,25 +53,21 @@ def run_task(
     loop = AgentLoop(
         client=client,
         task_dir=task_dir,
-        max_iterations=max_iterations,
-        prompts=prompts_dict,
-        prompts_version=prompts_version,
+        config=config,
         logger=logger,
-        allow_test_revision=allow_test_revision,
-        auto_approve_revision=auto_approve_revision,
-        min_coverage=min_coverage,
+        db_conn=conn,
     )
 
     try:
-        test_content = loop.generate_tests(task)
-        loop.run_implementation_loop(task, test_content)
+        test_content = loop.generate_tests(task.content)
+        loop.run_implementation_loop(task.content, test_content)
     except _RETRYABLE as e:
         loop.metrics.failure_reason = str(e)
         loop.metrics.failure_category = "api_error"
     except Exception as e:
         loop.metrics.failure_reason = str(e)
 
-    save_metrics(loop.metrics, task_dir, conn=conn, eval_run_id=eval_run_id)
+    save_metrics(loop.metrics, task_dir, conn=conn, eval_run_id=eval_run_id, task_id=task.id)
     return loop.metrics
 
 
@@ -282,15 +273,10 @@ def optimize_prompts(
 
 def run_suite(
     client: anthropic.Anthropic,
-    tasks: list[str],
+    tasks: list,
     base_dir: Path,
-    max_iterations: int,
-    prompts_dict: dict,
-    prompts_version: str,
+    config: AgentConfig,
     label: str = "",
-    allow_test_revision: bool = False,
-    auto_approve_revision: bool = False,
-    min_coverage: float = 0.0,
     conn=None,
     eval_run_id: int | None = None,
 ) -> list[RunMetrics]:
@@ -298,15 +284,8 @@ def run_suite(
     prefix = f"[{label}] " if label else ""
     for i, task in enumerate(tasks, 1):
         task_dir = base_dir / f"task-{i:02d}"
-        print(f"{prefix}[{i}/{len(tasks)}] {task}", flush=True)
-        metrics = run_task(
-            client, task, task_dir, max_iterations, prompts_dict, prompts_version,
-            allow_test_revision=allow_test_revision,
-            auto_approve_revision=auto_approve_revision,
-            min_coverage=min_coverage,
-            conn=conn,
-            eval_run_id=eval_run_id,
-        )
+        print(f"{prefix}[{i}/{len(tasks)}] {task.content}", flush=True)
+        metrics = run_task(client, task, task_dir, config, conn=conn, eval_run_id=eval_run_id)
         status = "✓ PASS" if metrics.success else "✗ FAIL"
         print(f"  → {status} in {metrics.impl_iterations} iter(s), {metrics.total_duration_s:.1f}s\n")
         results.append(metrics)
@@ -356,14 +335,29 @@ def main() -> None:
 
     tasks = db.get_random_tasks(conn, args.tasks)
     eval_prompts = db.load_eval_prompts(conn, args.eval_prompts)
-    v1_prompts = db.load_prompts(conn, args.prompts)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     eval_dir = Path(f"eval-{timestamp}")
     eval_dir.mkdir()
 
     if args.compare:
+        v1_prompts = db.load_prompts(conn, args.prompts)
         v2_prompts = db.load_prompts(conn, args.compare)
+
+        config_v1 = AgentConfig(
+            max_iterations=args.max_iter,
+            prompts_version=args.prompts,
+            allow_test_revision=args.allow_test_revision,
+            auto_approve_revision=args.auto_approve_revision,
+            min_coverage=args.min_coverage,
+        )
+        config_v2 = AgentConfig(
+            max_iterations=args.max_iter,
+            prompts_version=args.compare,
+            allow_test_revision=args.allow_test_revision,
+            auto_approve_revision=args.auto_approve_revision,
+            min_coverage=args.min_coverage,
+        )
 
         print(f"A/B test: {len(tasks)} tasks × 2 prompt versions → {eval_dir}/")
         print(f"V1: {args.prompts}  V2: {args.compare}")
@@ -382,22 +376,16 @@ def main() -> None:
         v1_dir = eval_dir / args.prompts
         v1_dir.mkdir()
         v1_results = run_suite(
-            client, tasks, v1_dir, args.max_iter, v1_prompts, args.prompts,
-            label=args.prompts, allow_test_revision=args.allow_test_revision,
-            auto_approve_revision=args.auto_approve_revision,
-            min_coverage=args.min_coverage,
-            conn=conn, eval_run_id=eval_run_id_v1,
+            client, tasks, v1_dir, config=config_v1,
+            label=args.prompts, conn=conn, eval_run_id=eval_run_id_v1,
         )
 
         print(f"=== Running {args.compare} ===")
         v2_dir = eval_dir / args.compare
         v2_dir.mkdir()
         v2_results = run_suite(
-            client, tasks, v2_dir, args.max_iter, v2_prompts, args.compare,
-            label=args.compare, allow_test_revision=args.allow_test_revision,
-            auto_approve_revision=args.auto_approve_revision,
-            min_coverage=args.min_coverage,
-            conn=conn, eval_run_id=eval_run_id_v2,
+            client, tasks, v2_dir, config=config_v2,
+            label=args.compare, conn=conn, eval_run_id=eval_run_id_v2,
         )
 
         print("=" * 60)
@@ -421,6 +409,16 @@ def main() -> None:
         primary_metrics = v1_results + v2_results
 
     else:
+        v1_prompts = db.load_prompts(conn, args.prompts)
+
+        config = AgentConfig(
+            max_iterations=args.max_iter,
+            prompts_version=args.prompts,
+            allow_test_revision=args.allow_test_revision,
+            auto_approve_revision=args.auto_approve_revision,
+            min_coverage=args.min_coverage,
+        )
+
         print(f"Running {len(tasks)} tasks → {eval_dir}/")
         print(f"Prompts: {args.prompts}")
         print(f"Max iterations per task: {args.max_iter}\n")
@@ -431,10 +429,7 @@ def main() -> None:
         )
 
         results = run_suite(
-            client, tasks, eval_dir, args.max_iter, v1_prompts, args.prompts,
-            allow_test_revision=args.allow_test_revision,
-            auto_approve_revision=args.auto_approve_revision,
-            min_coverage=args.min_coverage,
+            client, tasks, eval_dir, config=config,
             conn=conn, eval_run_id=eval_run_id,
         )
 

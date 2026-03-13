@@ -23,7 +23,7 @@ load_dotenv(Path(__file__).parent / ".env")
 import anthropic
 
 import db
-from agent import AgentLoop
+from agent import AgentLoop, AgentConfig
 from logger import setup_logging
 
 
@@ -58,6 +58,11 @@ def main() -> None:
         "--allow-test-revision",
         action="store_true",
         help="When the agent stops without passing tests, offer it a chance to revise solution_test.py (requires user approval unless --auto-approve-revision is set)",
+    )
+    parser.add_argument(
+        "--auto-approve-revision",
+        action="store_true",
+        help="Automatically approve agent test revisions without prompting (use with --allow-test-revision)",
     )
     parser.add_argument(
         "--min-coverage",
@@ -96,15 +101,19 @@ def main() -> None:
     db.seed_if_empty(conn)
 
     client = anthropic.Anthropic(api_key=api_key)
-    loop = AgentLoop(
-        client=client,
-        task_dir=task_dir,
+    config = AgentConfig(
         model=args.model,
         max_iterations=args.max_iterations,
         prompts_version=args.prompts,
-        logger=logger,
         allow_test_revision=args.allow_test_revision,
+        auto_approve_revision=args.auto_approve_revision,
         min_coverage=args.min_coverage,
+    )
+    loop = AgentLoop(
+        client=client,
+        task_dir=task_dir,
+        config=config,
+        logger=logger,
         db_conn=conn,
     )
 

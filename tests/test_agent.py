@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import anthropic
 
 from agent import (
+    AgentConfig,
     AgentLoop,
     DEFAULT_MODEL,
     _RETRYABLE,
@@ -160,7 +161,7 @@ class TestAgentLoopInit:
         )
         assert loop.model == DEFAULT_MODEL
         assert loop.max_iterations == 10
-        assert loop.allow_test_revision == 0
+        assert loop.allow_test_revision == False
         assert loop._logger is logger
         assert loop._prompts is MINIMAL_PROMPTS
 
@@ -169,7 +170,7 @@ class TestAgentLoopInit:
         loop = AgentLoop(
             client=mock_client,
             task_dir=tmp_task_dir,
-            prompts_version="v1",
+            config=AgentConfig(prompts_version="v1"),
             logger=MagicMock(),
         )
         assert "test_generation" in loop._prompts
@@ -242,17 +243,14 @@ def _make_dispatch_side_effect(task_dir, run_output="1 failed in 0.1s"):
     return dispatch
 
 
-def _make_loop(tmp_task_dir, mock_client, extra_kwargs=None):
-    kwargs = dict(
+def _make_loop(tmp_task_dir, mock_client, config=None):
+    return AgentLoop(
         client=mock_client,
         task_dir=tmp_task_dir,
+        config=config or AgentConfig(max_iterations=5),
         prompts=MINIMAL_PROMPTS,
         logger=MagicMock(),
-        max_iterations=5,
     )
-    if extra_kwargs:
-        kwargs.update(extra_kwargs)
-    return AgentLoop(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +322,7 @@ class TestRunImplementationLoopEndTurn:
                 SimpleNamespace(stdout="== 3 passed in 0.05s ==\n", stderr=""),
                 SimpleNamespace(stdout=cov_output, stderr=""),
             ]
-            loop = _make_loop(tmp_task_dir, mock_client, {"min_coverage": 80.0})
+            loop = _make_loop(tmp_task_dir, mock_client, AgentConfig(max_iterations=5, min_coverage=80.0))
             success, msg = loop.run_implementation_loop("task", "tests")
         assert not success
         assert "coverage" in loop.metrics.failure_reason.lower()
@@ -451,6 +449,11 @@ class TestRunImplementationLoopToolLogging:
         loop, _ = self._run_single_tool(tmp_task_dir, mock_client, tb)
         assert loop.metrics.tool_calls.get("firecrawl_scrape", 0) == 1
 
+    def test_run_python_tool(self, tmp_task_dir, mock_client):
+        tb = make_tool_block("run_python", {"code": "print(len('hello'))"})
+        loop, _ = self._run_single_tool(tmp_task_dir, mock_client, tb, dispatch_return="5")
+        assert loop.metrics.tool_calls.get("run_python", 0) == 1
+
     def test_calculator_tool(self, tmp_task_dir, mock_client):
         tb = make_tool_block("calculator", {"expression": "2 + 2"})
         loop, _ = self._run_single_tool(tmp_task_dir, mock_client, tb, dispatch_return="4")
@@ -497,7 +500,7 @@ class TestIterationCounter:
             make_response([tb_write, tb_run]),
         ]
         with patch("agent.dispatch_tool", return_value="1 failed in 0.1s"):
-            loop = _make_loop(tmp_task_dir, mock_client, {"max_iterations": 2})
+            loop = _make_loop(tmp_task_dir, mock_client, AgentConfig(max_iterations=2))
             success, msg = loop.run_implementation_loop("task", "tests")
         assert not success
         assert "Max iterations" in msg
@@ -563,7 +566,7 @@ class TestTestRevision:
                     SimpleNamespace(stdout="solution.py  10  0  100%\n", stderr=""),  # coverage run
                 ]
                 loop = _make_loop(tmp_task_dir, mock_client,
-                                  {"allow_test_revision": True, "auto_approve_revision": True})
+                                  AgentConfig(max_iterations=5, allow_test_revision=True, auto_approve_revision=True))
                 success, _ = loop.run_implementation_loop("task", initial)
 
         assert success
@@ -596,7 +599,7 @@ class TestTestRevision:
                     stdout="== 1 failed in 0.1s ==\n", stderr=""
                 )
                 with patch("builtins.input", return_value="N"):
-                    loop = _make_loop(tmp_task_dir, mock_client, {"allow_test_revision": True})
+                    loop = _make_loop(tmp_task_dir, mock_client, AgentConfig(max_iterations=5, allow_test_revision=True))
                     success, _ = loop.run_implementation_loop("task", initial)
 
         assert not success
@@ -630,7 +633,7 @@ class TestTestRevision:
                     SimpleNamespace(stdout="solution.py  10  0  100%\n", stderr=""),  # coverage run
                 ]
                 loop = _make_loop(tmp_task_dir, mock_client,
-                                  {"allow_test_revision": True, "auto_approve_revision": True})
+                                  AgentConfig(max_iterations=5, allow_test_revision=True, auto_approve_revision=True))
                 loop.run_implementation_loop("task", initial)
 
         # test file was NOT changed → no revision approved
@@ -655,9 +658,9 @@ class TestPromptTestRevisionApproval:
         loop = AgentLoop(
             client=mock_client,
             task_dir=tmp_task_dir,
+            config=AgentConfig(auto_approve_revision=True),
             prompts=MINIMAL_PROMPTS,
             logger=MagicMock(),
-            auto_approve_revision=True,
         )
         assert loop._prompt_test_revision_approval("reasoning", "old", "new") is True
 
@@ -761,9 +764,9 @@ class TestCallApiWithRetry:
         loop = AgentLoop(
             client=client,
             task_dir=tmp_path,
+            config=AgentConfig(max_retries=max_retries),
             prompts=MINIMAL_PROMPTS,
             logger=MagicMock(),
-            max_retries=max_retries,
         )
         return loop
 

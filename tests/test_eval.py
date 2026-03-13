@@ -9,7 +9,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import db as db_mod
 import eval as eval_mod
+from agent import AgentConfig
+from db import Task
 from eval import (
     build_eval_metrics,
     format_results_block,
@@ -37,16 +40,14 @@ from tests.conftest import (
 
 class TestLoaders:
     def test_get_random_tasks_from_db(self):
-        """db.get_random_tasks returns list of strings."""
+        """db.get_random_tasks returns list of Task objects."""
         import db
         conn = MagicMock()
-        fake_rows = [MagicMock(), MagicMock()]
-        fake_rows[0].__getitem__ = lambda self, k: "task A"
-        fake_rows[1].__getitem__ = lambda self, k: "task B"
-        conn.execute.return_value.fetchall.return_value = fake_rows
-        with patch.object(db, "get_random_tasks", return_value=["task A", "task B"]) as m:
+        expected = [Task(1, "task A", "standard"), Task(2, "task B", "hard")]
+        with patch.object(db, "get_random_tasks", return_value=expected) as m:
             result = db.get_random_tasks(conn, 2)
-        assert result == ["task A", "task B"]
+        assert result[0].content == "task A"
+        assert result[1].difficulty == "hard"
 
     def test_load_eval_prompts_from_db(self):
         """db.load_eval_prompts returns the eval prompts dict."""
@@ -232,6 +233,10 @@ class TestOptimizePrompts:
 # run_task
 # ---------------------------------------------------------------------------
 
+_DEFAULT_CONFIG = AgentConfig(max_iterations=5, prompts_version="v1")
+_SAMPLE_TASK = Task(id=1, content="a task", difficulty="standard")
+
+
 class TestRunTask:
     def test_run_task_success(self, tmp_path):
         client = MagicMock()
@@ -240,7 +245,7 @@ class TestRunTask:
             instance.metrics = make_metrics(task_dir=str(tmp_path / "task-01"))
             MockLoop.return_value = instance
             with patch("eval.save_metrics"):
-                result = run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1")
+                result = run_task(client, _SAMPLE_TASK, tmp_path / "task-01", _DEFAULT_CONFIG)
         assert result is instance.metrics
 
     def test_run_task_exception_stored(self, tmp_path):
@@ -251,21 +256,21 @@ class TestRunTask:
             instance.generate_tests.side_effect = RuntimeError("boom")
             MockLoop.return_value = instance
             with patch("eval.save_metrics"):
-                result = run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1")
+                result = run_task(client, _SAMPLE_TASK, tmp_path / "task-01", _DEFAULT_CONFIG)
         assert "boom" in result.failure_reason
 
     def test_run_task_passes_revision_flags(self, tmp_path):
         client = MagicMock()
+        config = AgentConfig(max_iterations=5, allow_test_revision=True, auto_approve_revision=True)
         with patch("eval.AgentLoop") as MockLoop:
             instance = MagicMock()
             instance.metrics = make_metrics(task_dir=str(tmp_path / "task-01"))
             MockLoop.return_value = instance
             with patch("eval.save_metrics"):
-                run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1",
-                         allow_test_revision=True, auto_approve_revision=True)
+                run_task(client, _SAMPLE_TASK, tmp_path / "task-01", config)
         _, kwargs = MockLoop.call_args
-        assert kwargs["allow_test_revision"] is True
-        assert kwargs["auto_approve_revision"] is True
+        assert kwargs["config"].allow_test_revision is True
+        assert kwargs["config"].auto_approve_revision is True
 
     def test_run_task_passes_conn_and_eval_run_id(self, tmp_path):
         client = MagicMock()
@@ -275,7 +280,7 @@ class TestRunTask:
             instance.metrics = make_metrics(task_dir=str(tmp_path / "task-01"))
             MockLoop.return_value = instance
             with patch("eval.save_metrics") as mock_save:
-                run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1",
+                run_task(client, _SAMPLE_TASK, tmp_path / "task-01", _DEFAULT_CONFIG,
                          conn=conn, eval_run_id=42)
         mock_save.assert_called_once()
         _, kwargs = mock_save.call_args
@@ -290,10 +295,10 @@ class TestRunTask:
 class TestRunSuite:
     def test_run_suite_basic(self, tmp_path, capsys):
         client = MagicMock()
-        tasks = ["task A", "task B"]
+        tasks = [Task(1, "task A", "standard"), Task(2, "task B", "hard")]
         m = make_metrics(task_dir=str(tmp_path))
         with patch("eval.run_task", return_value=m):
-            results = run_suite(client, tasks, tmp_path, 5, MINIMAL_PROMPTS, "v1", label="v1")
+            results = run_suite(client, tasks, tmp_path, _DEFAULT_CONFIG, label="v1")
         assert len(results) == 2
         out = capsys.readouterr().out
         assert "task A" in out
@@ -529,5 +534,5 @@ class TestMain:
                                                 with patch("eval.run_judge_single", return_value="j"):
                                                     eval_mod.main()
         _, kwargs = mock_suite.call_args
-        assert kwargs["allow_test_revision"] is True
-        assert kwargs["auto_approve_revision"] is True
+        assert kwargs["config"].allow_test_revision is True
+        assert kwargs["config"].auto_approve_revision is True

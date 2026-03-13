@@ -116,8 +116,9 @@ def save_metrics(
     task_dir: Path,
     conn: sqlite3.Connection | None = None,
     eval_run_id: int | None = None,
+    task_id: int | None = None,
 ) -> None:
     if conn is not None:
         import db
-        db.save_task_result(conn, metrics, eval_run_id=eval_run_id)
+        db.save_task_result(conn, metrics, eval_run_id=eval_run_id, task_id=task_id)
 

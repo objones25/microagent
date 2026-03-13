@@ -8,12 +8,20 @@ import json
 import random
 import sqlite3
 import tomllib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from logger import RunMetrics
+
+
+@dataclass
+class Task:
+    id: int
+    content: str
+    difficulty: str
 
 DB_PATH = Path(__file__).parent / "microagent.db"
 
@@ -326,13 +334,13 @@ def prompts_to_toml_text(prompts: dict, version: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_random_tasks(conn: sqlite3.Connection, n: int) -> list[str]:
-    """Return n randomly sampled task content strings from the DB."""
-    rows = conn.execute("SELECT content FROM tasks").fetchall()
-    contents = [r["content"] for r in rows]
-    if n >= len(contents):
-        return contents
-    return random.sample(contents, n)
+def get_random_tasks(conn: sqlite3.Connection, n: int) -> list[Task]:
+    """Return n randomly sampled Task objects from the DB."""
+    rows = conn.execute("SELECT id, content, difficulty FROM tasks").fetchall()
+    tasks = [Task(id=r["id"], content=r["content"], difficulty=r["difficulty"]) for r in rows]
+    if n >= len(tasks):
+        return tasks
+    return random.sample(tasks, n)
 
 
 def add_task(

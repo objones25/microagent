@@ -89,7 +89,7 @@ class TestMain:
                             MockLoop.return_value = MagicMock()
                             microagent.main()
         _, kwargs = MockLoop.call_args
-        assert kwargs["allow_test_revision"] is True
+        assert kwargs["config"].allow_test_revision is True
 
     def test_db_conn_passed_to_agent_loop(self, tmp_path, monkeypatch):
         """db_conn kwarg is forwarded to AgentLoop."""
@@ -124,7 +124,7 @@ class TestMain:
                             MockLoop.return_value = MagicMock()
                             microagent.main()
         _, kwargs = MockLoop.call_args
-        assert kwargs["model"] == "claude-opus-4-6"
+        assert kwargs["config"].model == "claude-opus-4-6"
 
     def test_keyboard_interrupt(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")

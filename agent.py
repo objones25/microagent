@@ -3,6 +3,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,17 @@ _RETRYABLE = (
     anthropic.InternalServerError,
     anthropic.APIConnectionError,
 )
+
+
+@dataclass
+class AgentConfig:
+    model: str = DEFAULT_MODEL
+    max_iterations: int = 10
+    max_retries: int = 3
+    prompts_version: str = "v2.4"
+    allow_test_revision: bool = False
+    auto_approve_revision: bool = False
+    min_coverage: float = 0.0
 
 
 def load_prompts(
@@ -77,37 +89,33 @@ class AgentLoop:
         self,
         client: anthropic.Anthropic,
         task_dir: Path,
-        model: str = DEFAULT_MODEL,
-        max_iterations: int = 10,
-        max_retries: int = 3,
+        config: Optional[AgentConfig] = None,
+        *,
         prompts: Optional[dict] = None,
-        prompts_version: str = "v2.4",
         logger=None,
-        allow_test_revision: bool = False,
-        auto_approve_revision: bool = False,
         db_conn: Optional[sqlite3.Connection] = None,
-        min_coverage: float = 0.0,
     ) -> None:
+        cfg = config if config is not None else AgentConfig()
         self.client = client
         self.task_dir = task_dir
-        self.model = model
-        self.max_iterations = max_iterations
-        self.max_retries = max_retries
-        self.prompts_version = prompts_version
-        self.allow_test_revision = allow_test_revision
-        self.auto_approve_revision = auto_approve_revision
-        self.min_coverage = min_coverage
+        self.model = cfg.model
+        self.max_iterations = cfg.max_iterations
+        self.max_retries = cfg.max_retries
+        self.prompts_version = cfg.prompts_version
+        self.allow_test_revision = cfg.allow_test_revision
+        self.auto_approve_revision = cfg.auto_approve_revision
+        self.min_coverage = cfg.min_coverage
         self._db_conn = db_conn
         self._prompts = (
             prompts if prompts is not None
-            else load_prompts(prompts_version, conn=db_conn)
+            else load_prompts(cfg.prompts_version, conn=db_conn)
         )
         self._logger = logger if logger is not None else setup_logging(task_dir)
         self.metrics = RunMetrics(
             task_prompt="",
             task_dir=str(task_dir),
-            prompts_version=prompts_version,
-            model=model,
+            prompts_version=cfg.prompts_version,
+            model=cfg.model,
             started_at=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -323,6 +331,11 @@ class AgentLoop:
                 elif tc.name == "firecrawl_scrape":
                     url = tc.input.get("url", "?")
                     self._logger.info(f"  → firecrawl_scrape: {url}")
+
+                elif tc.name == "run_python":
+                    code = tc.input.get("code", "")
+                    preview = code.splitlines()[0][:60] if code else "?"
+                    self._logger.info(f"  → run_python: {preview}")
 
                 elif tc.name == "calculator":
                     expr = tc.input.get("expression", "?")
