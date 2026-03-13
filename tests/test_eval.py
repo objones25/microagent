@@ -1,7 +1,6 @@
 """Tests for eval.py — targets >98% line/branch coverage."""
 import json
 import sys
-import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -14,8 +13,6 @@ import eval as eval_mod
 from eval import (
     build_eval_metrics,
     format_results_block,
-    load_eval_prompts,
-    load_tasks,
     optimize_prompts,
     run_judge_ab,
     run_judge_single,
@@ -35,34 +32,30 @@ from tests.conftest import (
 
 
 # ---------------------------------------------------------------------------
-# load_eval_prompts / load_tasks
+# DB-based loaders (via mocked db module)
 # ---------------------------------------------------------------------------
 
 class TestLoaders:
-    def test_load_eval_prompts_default(self):
-        ep = load_eval_prompts("eval-v1")
-        assert "judge" in ep
-        assert "meta_judge" in ep
+    def test_get_random_tasks_from_db(self):
+        """db.get_random_tasks returns list of strings."""
+        import db
+        conn = MagicMock()
+        fake_rows = [MagicMock(), MagicMock()]
+        fake_rows[0].__getitem__ = lambda self, k: "task A"
+        fake_rows[1].__getitem__ = lambda self, k: "task B"
+        conn.execute.return_value.fetchall.return_value = fake_rows
+        with patch.object(db, "get_random_tasks", return_value=["task A", "task B"]) as m:
+            result = db.get_random_tasks(conn, 2)
+        assert result == ["task A", "task B"]
 
-    def test_load_tasks_default(self):
-        tasks = load_tasks("v1")
-        assert len(tasks) == 10
-        assert all(tasks)  # no blank strings
-
-    def test_load_tasks_filters_blanks(self, tmp_path, monkeypatch):
-        tasks_file = tmp_path / "tasks-test.txt"
-        tasks_file.write_text("task one\n\ntask two\n   \ntask three\n")
-
-        # Patch the evals dir to point at tmp_path
-        monkeypatch.setattr(eval_mod, "Path", lambda x: tmp_path if "eval.py" in str(x) else Path(x))
-
-        with patch.object(Path, "__truediv__", lambda self, other: tmp_path / other if str(other).startswith("evals") else self / other):
-            pass  # just ensure no exception
-
-        # Direct file test instead
-        lines = tasks_file.read_text().splitlines()
-        result = [l.strip() for l in lines if l.strip()]
-        assert result == ["task one", "task two", "task three"]
+    def test_load_eval_prompts_from_db(self):
+        """db.load_eval_prompts returns the eval prompts dict."""
+        import db
+        conn = MagicMock()
+        with patch.object(db, "load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS) as m:
+            result = db.load_eval_prompts(conn, "eval-v1")
+        assert "judge" in result
+        assert "meta_judge" in result
 
 
 # ---------------------------------------------------------------------------
@@ -199,40 +192,37 @@ class TestJudges:
 # ---------------------------------------------------------------------------
 
 class TestOptimizePrompts:
-    def test_valid_toml_saves_file(self, tmp_path, monkeypatch, capsys):
-        current_toml = tmp_path / "agent.toml"
-        current_toml.write_text('version = "v1"\n')
-
+    def test_valid_toml_saves_to_db(self, capsys):
         valid_toml = (
             'version = "v2"\n'
             '[test_generation]\nsystem = "s"\nuser = "u"\n'
+            '[implementation]\nsystem = "is"\nuser = "iu"\n'
+            '[prompt_md_section]\ntemplate = "t"\n'
+            '[test_revision]\nuser = "r"\n'
         )
         client = MagicMock()
         client.messages.create.return_value = make_response(
             [make_text_block(valid_toml)], stop_reason="end_turn"
         )
-
-        written = {}
-        monkeypatch.setattr(Path, "write_text", lambda self, content, **kw: written.__setitem__(str(self), content))
-
-        optimize_prompts(client, current_toml, "analysis", "20260101-120000", MINIMAL_EVAL_PROMPTS)
-
+        conn = MagicMock()
+        with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+            with patch("eval.db.prompts_to_toml_text", return_value='version = "v1"\n'):
+                with patch("eval.db.save_prompt_version") as mock_save:
+                    optimize_prompts(client, conn, "v1", "analysis", "20260101-120000", MINIMAL_EVAL_PROMPTS)
+        mock_save.assert_called_once()
         captured = capsys.readouterr()
         assert "Optimized prompts saved" in captured.out
         assert "20260101-120000" in captured.out
-        # A file with the timestamp was written
-        assert any("20260101-120000" in k for k in written)
 
-    def test_invalid_toml_prints_warning(self, tmp_path, capsys):
-        current_toml = tmp_path / "agent.toml"
-        current_toml.write_text('version = "v1"\n')
-
+    def test_invalid_toml_prints_warning(self, capsys):
         client = MagicMock()
         client.messages.create.return_value = make_response(
             [make_text_block("NOT VALID TOML ][[ !!!")], stop_reason="end_turn"
         )
-
-        optimize_prompts(client, current_toml, "analysis", "20260101", MINIMAL_EVAL_PROMPTS)
+        conn = MagicMock()
+        with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+            with patch("eval.db.prompts_to_toml_text", return_value='version = "v1"\n'):
+                optimize_prompts(client, conn, "v1", "analysis", "20260101", MINIMAL_EVAL_PROMPTS)
         captured = capsys.readouterr()
         assert "Warning" in captured.out
         assert "Not saving" in captured.out
@@ -277,6 +267,21 @@ class TestRunTask:
         assert kwargs["allow_test_revision"] is True
         assert kwargs["auto_approve_revision"] is True
 
+    def test_run_task_passes_conn_and_eval_run_id(self, tmp_path):
+        client = MagicMock()
+        conn = MagicMock()
+        with patch("eval.AgentLoop") as MockLoop:
+            instance = MagicMock()
+            instance.metrics = make_metrics(task_dir=str(tmp_path / "task-01"))
+            MockLoop.return_value = instance
+            with patch("eval.save_metrics") as mock_save:
+                run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1",
+                         conn=conn, eval_run_id=42)
+        mock_save.assert_called_once()
+        _, kwargs = mock_save.call_args
+        assert kwargs["conn"] is conn
+        assert kwargs["eval_run_id"] == 42
+
 
 # ---------------------------------------------------------------------------
 # run_suite
@@ -298,6 +303,21 @@ class TestRunSuite:
 # ---------------------------------------------------------------------------
 # main() — single run, A/B, flags
 # ---------------------------------------------------------------------------
+
+def _db_patches(tasks=None):
+    """Return a dict of patch targets -> mock kwargs for all DB calls in eval.main()."""
+    conn = MagicMock()
+    return {
+        "eval.db.get_db": {"return_value": conn},
+        "eval.db.init_db": {},
+        "eval.db.seed_if_empty": {},
+        "eval.db.get_random_tasks": {"return_value": tasks or ["task1"]},
+        "eval.db.load_eval_prompts": {"return_value": MINIMAL_EVAL_PROMPTS},
+        "eval.db.load_prompts": {"return_value": MINIMAL_PROMPTS},
+        "eval.db.save_eval_run": {"return_value": 1},
+        "eval.db.save_judgment": {},
+    }
+
 
 class TestMain:
     """Tests for eval.main() through patched dependencies."""
@@ -321,10 +341,19 @@ class TestMain:
             ["eval.py", "--tasks", "1", "--max-iter", "1"]
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "eval-xxx" / "task-01"))
+        patches = _db_patches(tasks=["task1"])
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
-                with patch("eval.run_judge_single", return_value="judgment") as mock_judge:
-                    eval_mod.main()
+            with patch("eval.db.get_db", **patches["eval.db.get_db"]):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
+                                                with patch("eval.run_judge_single", return_value="judgment") as mock_judge:
+                                                    eval_mod.main()
         mock_suite.assert_called_once()
         mock_judge.assert_called_once()
         out = capsys.readouterr().out
@@ -339,10 +368,18 @@ class TestMain:
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "eval-xxx" / "task-01"))
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.run_suite", return_value=[fake_m]):
-                with patch("eval.run_judge_single", return_value="judgment"):
-                    with patch("eval.optimize_prompts") as mock_opt:
-                        eval_mod.main()
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]):
+                                                with patch("eval.run_judge_single", return_value="judgment"):
+                                                    with patch("eval.optimize_prompts") as mock_opt:
+                                                        eval_mod.main()
         mock_opt.assert_called_once()
 
     def test_single_run_with_meta_judge(self, tmp_path, monkeypatch, capsys):
@@ -354,10 +391,18 @@ class TestMain:
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "eval-xxx" / "task-01"))
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.run_suite", return_value=[fake_m]):
-                with patch("eval.run_judge_single", return_value="judgment"):
-                    with patch("eval.run_meta_judge", return_value="meta") as mock_meta:
-                        eval_mod.main()
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]):
+                                                with patch("eval.run_judge_single", return_value="judgment"):
+                                                    with patch("eval.run_meta_judge", return_value="meta") as mock_meta:
+                                                        eval_mod.main()
         mock_meta.assert_called_once()
         out = capsys.readouterr().out
         assert "META-JUDGE" in out
@@ -371,10 +416,17 @@ class TestMain:
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "task-01"))
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.load_prompts", return_value=MINIMAL_PROMPTS):
-                with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
-                    with patch("eval.run_judge_ab", return_value="ab judgment") as mock_judge:
-                        eval_mod.main()
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
+                                                with patch("eval.run_judge_ab", return_value="ab judgment") as mock_judge:
+                                                    eval_mod.main()
         assert mock_suite.call_count == 2
         mock_judge.assert_called_once()
         out = capsys.readouterr().out
@@ -390,11 +442,18 @@ class TestMain:
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "task-01"))
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.load_prompts", return_value=MINIMAL_PROMPTS):
-                with patch("eval.run_suite", return_value=[fake_m]):
-                    with patch("eval.run_judge_ab", return_value="ab judgment"):
-                        with patch("eval.run_meta_judge", return_value="meta ab") as mock_meta:
-                            eval_mod.main()
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]):
+                                                with patch("eval.run_judge_ab", return_value="ab judgment"):
+                                                    with patch("eval.run_meta_judge", return_value="meta ab") as mock_meta:
+                                                        eval_mod.main()
         mock_meta.assert_called_once()
         args = mock_meta.call_args[0]
         assert args[4] == "judge_ab"
@@ -409,12 +468,44 @@ class TestMain:
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "eval-xxx" / "task-01"))
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.run_suite", return_value=[fake_m]):
-                with patch("eval.run_judge_single", return_value="j"):
-                    eval_mod.main()
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]):
+                                                with patch("eval.run_judge_single", return_value="j"):
+                                                    eval_mod.main()
         assert out_file.exists()
         data = json.loads(out_file.read_text())
         assert "summary" in data
+
+    def test_ab_results_written_to_custom_out(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.chdir(tmp_path)
+        out_file = tmp_path / "ab_results.json"
+        monkeypatch.setattr(
+            sys, "argv",
+            ["eval.py", "--tasks", "1", "--max-iter", "1",
+             "--prompts", "va", "--compare", "vb", "--out", str(out_file)]
+        )
+        fake_m = make_metrics(task_dir=str(tmp_path / "task-01"))
+        with patch("eval.anthropic.Anthropic"):
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]):
+                                                with patch("eval.run_judge_ab", return_value="j"):
+                                                    eval_mod.main()
+        assert out_file.exists()
 
     def test_allow_test_revision_and_auto_approve_passed_to_suite(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
@@ -426,9 +517,17 @@ class TestMain:
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "task-01"))
         with patch("eval.anthropic.Anthropic"):
-            with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
-                with patch("eval.run_judge_single", return_value="j"):
-                    eval_mod.main()
+            with patch("eval.db.get_db", return_value=MagicMock()):
+                with patch("eval.db.init_db"):
+                    with patch("eval.db.seed_if_empty"):
+                        with patch("eval.db.get_random_tasks", return_value=["task1"]):
+                            with patch("eval.db.load_eval_prompts", return_value=MINIMAL_EVAL_PROMPTS):
+                                with patch("eval.db.load_prompts", return_value=MINIMAL_PROMPTS):
+                                    with patch("eval.db.save_eval_run", return_value=1):
+                                        with patch("eval.db.save_judgment"):
+                                            with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
+                                                with patch("eval.run_judge_single", return_value="j"):
+                                                    eval_mod.main()
         _, kwargs = mock_suite.call_args
         assert kwargs["allow_test_revision"] is True
         assert kwargs["auto_approve_revision"] is True

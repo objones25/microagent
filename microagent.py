@@ -22,6 +22,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 import anthropic
 
+import db
 from agent import AgentLoop
 from logger import setup_logging
 
@@ -49,14 +50,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--prompts",
-        default="v1",
+        default="v2.4",
         metavar="VERSION",
-        help="Prompts version to load from prompts/<VERSION>.toml (default: v1)",
+        help="Prompts version to load from prompts/<VERSION>.toml (default: v2.4)",
     )
     parser.add_argument(
         "--allow-test-revision",
         action="store_true",
         help="When the agent stops without passing tests, offer it a chance to revise solution_test.py (requires user approval unless --auto-approve-revision is set)",
+    )
+    parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=0.0,
+        metavar="PCT",
+        help="Minimum test coverage %% required to pass (0 = disabled, default: 0)",
     )
     args = parser.parse_args()
 
@@ -83,6 +91,10 @@ def main() -> None:
         shutil.copy(prompt_md_src, dest)
         logger.info(f"Copied .prompt.md → {dest}")
 
+    conn = db.get_db()
+    db.init_db(conn)
+    db.seed_if_empty(conn)
+
     client = anthropic.Anthropic(api_key=api_key)
     loop = AgentLoop(
         client=client,
@@ -92,6 +104,8 @@ def main() -> None:
         prompts_version=args.prompts,
         logger=logger,
         allow_test_revision=args.allow_test_revision,
+        min_coverage=args.min_coverage,
+        db_conn=conn,
     )
 
     try:

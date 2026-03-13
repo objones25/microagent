@@ -2,19 +2,18 @@
 """
 eval.py — Evaluation harness for microagent.
 
-Runs a suite of harder coding tasks through the agent, collects structured results,
+Runs a suite of coding tasks through the agent, collects structured results,
 then passes everything to a Claude judge for analysis and prompt improvement suggestions.
 
 Usage:
-    python eval.py                           # run v1 prompts on all tasks
+    python eval.py                           # run v1 prompts on 10 random tasks
     python eval.py --compare v2              # A/B test v1 vs v2 prompts
-    python eval.py --tasks 5                 # run first N tasks only
+    python eval.py --tasks 5                 # run 5 randomly-sampled tasks
     python eval.py --max-iter 5              # limit implementation iterations per task
     python eval.py --out results.json        # save raw results to file
-    python eval.py --optimize                # save improved prompt TOML after judging
+    python eval.py --optimize                # save improved prompt version to DB after judging
     python eval.py --meta-judge              # also evaluate the judge's output quality
-    python eval.py --eval-prompts eval-v2    # use a different judge/optimizer prompt version
-    python eval.py --tasks-file v2           # use a different task list
+    python eval.py --eval-prompts eval-v1.1  # use a different judge/optimizer prompt version
 """
 
 import argparse
@@ -31,24 +30,9 @@ load_dotenv(Path(__file__).parent / ".env")
 
 import anthropic
 
-from agent import AgentLoop, load_prompts
+import db
+from agent import AgentLoop, load_prompts, _RETRYABLE
 from logger import RunMetrics, setup_logging, save_metrics
-
-
-# ------------------------------------------------------------------
-# Loaders
-# ------------------------------------------------------------------
-
-def load_eval_prompts(version: str = "eval-v1") -> dict:
-    path = Path(__file__).parent / "prompts" / f"{version}.toml"
-    with open(path, "rb") as f:
-        return tomllib.load(f)
-
-
-def load_tasks(version: str = "v1") -> list[str]:
-    path = Path(__file__).parent / "evals" / f"tasks-{version}.txt"
-    lines = path.read_text().splitlines()
-    return [line.strip() for line in lines if line.strip()]
 
 
 # ------------------------------------------------------------------
@@ -64,6 +48,9 @@ def run_task(
     prompts_version: str,
     allow_test_revision: bool = False,
     auto_approve_revision: bool = False,
+    min_coverage: float = 0.0,
+    conn=None,
+    eval_run_id: int | None = None,
 ) -> RunMetrics:
     task_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(task_dir)
@@ -77,15 +64,19 @@ def run_task(
         logger=logger,
         allow_test_revision=allow_test_revision,
         auto_approve_revision=auto_approve_revision,
+        min_coverage=min_coverage,
     )
 
     try:
         test_content = loop.generate_tests(task)
         loop.run_implementation_loop(task, test_content)
+    except _RETRYABLE as e:
+        loop.metrics.failure_reason = str(e)
+        loop.metrics.failure_category = "api_error"
     except Exception as e:
         loop.metrics.failure_reason = str(e)
 
-    save_metrics(loop.metrics, task_dir)
+    save_metrics(loop.metrics, task_dir, conn=conn, eval_run_id=eval_run_id)
     return loop.metrics
 
 
@@ -117,11 +108,12 @@ def format_results_block(metrics_list: list[RunMetrics]) -> str:
             trimmed = "\n".join(log_lines[-20:])
             pytest_snippet = f"\n\n**run.log (last 20 lines):**\n```\n{trimmed}\n```"
 
+        cov_note = f"\n- **Coverage**: {m.test_coverage_pct:.0f}%" if m.test_coverage_pct > 0 else ""
         blocks.append(
             f"### Task {i}: {m.task_prompt}\n"
             f"- **Status**: {status}\n"
             f"- **Iterations**: {m.impl_iterations}\n"
-            f"- **Duration**: {m.total_duration_s:.1f}s{error_note}"
+            f"- **Duration**: {m.total_duration_s:.1f}s{cov_note}{error_note}"
             f"{test_snippet}{sol_snippet}{pytest_snippet}"
         )
     return "\n\n---\n\n".join(blocks)
@@ -152,6 +144,16 @@ def build_eval_metrics(metrics_list: list[RunMetrics]) -> dict:
         "avg_impl_duration_s": round(sum(m.impl_duration_s for m in metrics_list) / n, 2) if n else 0,
         "total_tool_calls_by_type": tool_totals,
         "avg_impl_llm_calls": round(sum(m.impl_llm_calls for m in metrics_list) / n, 2) if n else 0,
+        "avg_test_coverage_pct": round(
+            sum(m.test_coverage_pct for m in metrics_list if m.test_coverage_pct > 0)
+            / max(1, sum(1 for m in metrics_list if m.test_coverage_pct > 0)), 1
+        ),
+        "avg_api_retries": round(sum(m.api_retries for m in metrics_list) / n, 2) if n else 0,
+        "failure_category_counts": {
+            cat: sum(1 for m in metrics_list if m.failure_category == cat)
+            for cat in ("api_error", "max_iterations", "coverage", "test_failure", "")
+            if any(m.failure_category == cat for m in metrics_list)
+        },
     }
     return {
         "summary": summary,
@@ -248,13 +250,15 @@ def run_meta_judge(
 
 def optimize_prompts(
     client: anthropic.Anthropic,
-    current_toml_path: Path,
+    conn,
+    version: str,
     judge_analysis: str,
     eval_timestamp: str,
     eval_prompts: dict,
 ) -> None:
-    current_toml = current_toml_path.read_text()
-    user_message = current_toml + "\n\n---\n\n" + judge_analysis
+    prompts_dict = db.load_prompts(conn, version)
+    current_toml_text = db.prompts_to_toml_text(prompts_dict, version)
+    user_message = current_toml_text + "\n\n---\n\n" + judge_analysis
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=8096,
@@ -263,13 +267,12 @@ def optimize_prompts(
     )
     new_toml_text = response.content[0].text.strip()
     try:
-        tomllib.loads(new_toml_text)
+        new_prompts = tomllib.loads(new_toml_text)
     except tomllib.TOMLDecodeError as e:
         print(f"Warning: optimized output is not valid TOML ({e}). Not saving.")
         return
-    out_path = Path(__file__).parent / "prompts" / f"{eval_timestamp}.toml"
-    out_path.write_text(new_toml_text)
-    print(f"Optimized prompts saved → prompts/{eval_timestamp}.toml")
+    db.save_prompt_version(conn, eval_timestamp, new_prompts)
+    print(f"Optimized prompts saved → version: {eval_timestamp}")
     print(f"Test with: uv run python eval.py --prompts {eval_timestamp}")
 
 
@@ -287,6 +290,9 @@ def run_suite(
     label: str = "",
     allow_test_revision: bool = False,
     auto_approve_revision: bool = False,
+    min_coverage: float = 0.0,
+    conn=None,
+    eval_run_id: int | None = None,
 ) -> list[RunMetrics]:
     results = []
     prefix = f"[{label}] " if label else ""
@@ -297,6 +303,9 @@ def run_suite(
             client, task, task_dir, max_iterations, prompts_dict, prompts_version,
             allow_test_revision=allow_test_revision,
             auto_approve_revision=auto_approve_revision,
+            min_coverage=min_coverage,
+            conn=conn,
+            eval_run_id=eval_run_id,
         )
         status = "✓ PASS" if metrics.success else "✗ FAIL"
         print(f"  → {status} in {metrics.impl_iterations} iter(s), {metrics.total_duration_s:.1f}s\n")
@@ -309,29 +318,29 @@ def run_suite(
 # ------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate microagent on a suite of harder coding tasks")
-    parser.add_argument("--prompts", default="v1", metavar="VERSION",
-                        help="Agent prompts version to use (default: v1)")
+    parser = argparse.ArgumentParser(description="Evaluate microagent on a suite of coding tasks")
+    parser.add_argument("--prompts", default="v2.4", metavar="VERSION",
+                        help="Agent prompts version to use (default: v2.4)")
     parser.add_argument("--compare", default=None, metavar="VERSION",
                         help="Second agent prompts version to A/B test against --prompts")
-    parser.add_argument("--tasks", type=int, default=None,
-                        help="Number of tasks to run (default: all)")
-    parser.add_argument("--tasks-file", default="v1", metavar="VERSION",
-                        help="Task list version to load from evals/tasks-<VERSION>.txt (default: v1)")
+    parser.add_argument("--tasks", type=int, default=10,
+                        help="Number of tasks to randomly sample from DB (default: 10)")
     parser.add_argument("--max-iter", type=int, default=5,
                         help="Max implementation iterations per task (default: 5)")
     parser.add_argument("--out", default=None,
                         help="Save raw results JSON to this file")
     parser.add_argument("--optimize", action="store_true",
-                        help="After judge analysis, call Claude to produce an improved TOML prompt file")
+                        help="After judge analysis, call Claude to produce an improved prompt version in DB")
     parser.add_argument("--meta-judge", action="store_true",
                         help="After judging, call Claude to evaluate the quality of the judge's output")
-    parser.add_argument("--eval-prompts", default="eval-v1", metavar="VERSION",
-                        help="Eval prompts version (judge, optimizer, meta-judge) from prompts/<VERSION>.toml (default: eval-v1)")
+    parser.add_argument("--eval-prompts", default="eval-v1.2", metavar="VERSION",
+                        help="Eval prompts version (judge, optimizer, meta-judge) (default: eval-v1.2)")
     parser.add_argument("--allow-test-revision", action="store_true",
                         help="When the agent stops without passing tests, offer it a chance to revise tests (requires --auto-approve-revision for non-interactive use)")
     parser.add_argument("--auto-approve-revision", action="store_true",
                         help="Automatically approve agent test revisions without prompting (use with --allow-test-revision)")
+    parser.add_argument("--min-coverage", type=float, default=0.0, metavar="PCT",
+                        help="Minimum test coverage %% required to pass a task (0 = disabled, default: 0)")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -341,61 +350,73 @@ def main() -> None:
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    all_tasks = load_tasks(args.tasks_file)
-    tasks = all_tasks[: args.tasks] if args.tasks is not None else all_tasks
-    eval_prompts = load_eval_prompts(args.eval_prompts)
+    conn = db.get_db()
+    db.init_db(conn)
+    db.seed_if_empty(conn)
+
+    tasks = db.get_random_tasks(conn, args.tasks)
+    eval_prompts = db.load_eval_prompts(conn, args.eval_prompts)
+    v1_prompts = db.load_prompts(conn, args.prompts)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     eval_dir = Path(f"eval-{timestamp}")
     eval_dir.mkdir()
 
-    v1_prompts = load_prompts(args.prompts)
-
     if args.compare:
-        v2_prompts = load_prompts(args.compare)
+        v2_prompts = db.load_prompts(conn, args.compare)
 
         print(f"A/B test: {len(tasks)} tasks × 2 prompt versions → {eval_dir}/")
         print(f"V1: {args.prompts}  V2: {args.compare}")
         print(f"Max iterations per task: {args.max_iter}\n")
 
+        eval_run_id_v1 = db.save_eval_run(
+            conn, f"{timestamp}-{args.prompts}", args.prompts, args.eval_prompts,
+            "claude-sonnet-4-6", args.max_iter, args.allow_test_revision, len(tasks),
+        )
+        eval_run_id_v2 = db.save_eval_run(
+            conn, f"{timestamp}-{args.compare}", args.compare, args.eval_prompts,
+            "claude-sonnet-4-6", args.max_iter, args.allow_test_revision, len(tasks),
+        )
+
         print(f"=== Running {args.prompts} ===")
         v1_dir = eval_dir / args.prompts
         v1_dir.mkdir()
-        v1_results = run_suite(client, tasks, v1_dir, args.max_iter, v1_prompts, args.prompts,
-                               label=args.prompts, allow_test_revision=args.allow_test_revision,
-                               auto_approve_revision=args.auto_approve_revision)
+        v1_results = run_suite(
+            client, tasks, v1_dir, args.max_iter, v1_prompts, args.prompts,
+            label=args.prompts, allow_test_revision=args.allow_test_revision,
+            auto_approve_revision=args.auto_approve_revision,
+            min_coverage=args.min_coverage,
+            conn=conn, eval_run_id=eval_run_id_v1,
+        )
 
         print(f"=== Running {args.compare} ===")
         v2_dir = eval_dir / args.compare
         v2_dir.mkdir()
-        v2_results = run_suite(client, tasks, v2_dir, args.max_iter, v2_prompts, args.compare,
-                               label=args.compare, allow_test_revision=args.allow_test_revision,
-                               auto_approve_revision=args.auto_approve_revision)
+        v2_results = run_suite(
+            client, tasks, v2_dir, args.max_iter, v2_prompts, args.compare,
+            label=args.compare, allow_test_revision=args.allow_test_revision,
+            auto_approve_revision=args.auto_approve_revision,
+            min_coverage=args.min_coverage,
+            conn=conn, eval_run_id=eval_run_id_v2,
+        )
 
         print("=" * 60)
         print(f"{args.prompts}: {summary_line(v1_results)}")
         print(f"{args.compare}: {summary_line(v2_results)}")
         print("=" * 60)
 
-        all_results = {
-            args.prompts: build_eval_metrics(v1_results),
-            args.compare: build_eval_metrics(v2_results),
-        }
-        out_path = Path(args.out) if args.out else eval_dir / "results.json"
-        out_path.write_text(json.dumps(all_results, indent=2))
-        print(f"\nRaw results saved to: {out_path}")
-
-        eval_metrics_path = eval_dir / "eval_metrics.json"
-        all_results["_meta"] = {
-            "eval_prompts_version": args.eval_prompts,
-            "tasks_version": args.tasks_file,
-        }
-        eval_metrics_path.write_text(json.dumps(all_results, indent=2))
-        print(f"Eval metrics saved to: {eval_metrics_path}")
+        if args.out:
+            all_results = {
+                args.prompts: build_eval_metrics(v1_results),
+                args.compare: build_eval_metrics(v2_results),
+            }
+            Path(args.out).write_text(json.dumps(all_results, indent=2))
+            print(f"\nRaw results saved to: {args.out}")
 
         judgment = run_judge_ab(
             client, v1_results, v2_results, args.max_iter, v1_prompts, v2_prompts, eval_prompts
         )
+        db.save_judgment(conn, eval_run_id_v1, "ab", judgment)
         judge_template_key = "judge_ab"
         primary_metrics = v1_results + v2_results
 
@@ -404,9 +425,18 @@ def main() -> None:
         print(f"Prompts: {args.prompts}")
         print(f"Max iterations per task: {args.max_iter}\n")
 
-        results = run_suite(client, tasks, eval_dir, args.max_iter, v1_prompts, args.prompts,
-                            allow_test_revision=args.allow_test_revision,
-                            auto_approve_revision=args.auto_approve_revision)
+        eval_run_id = db.save_eval_run(
+            conn, timestamp, args.prompts, args.eval_prompts,
+            "claude-sonnet-4-6", args.max_iter, args.allow_test_revision, len(tasks),
+        )
+
+        results = run_suite(
+            client, tasks, eval_dir, args.max_iter, v1_prompts, args.prompts,
+            allow_test_revision=args.allow_test_revision,
+            auto_approve_revision=args.auto_approve_revision,
+            min_coverage=args.min_coverage,
+            conn=conn, eval_run_id=eval_run_id,
+        )
 
         passed = sum(1 for m in results if m.success)
         total_iter = sum(m.impl_iterations for m in results)
@@ -415,26 +445,17 @@ def main() -> None:
         print(f"Total iterations: {total_iter} (avg {total_iter/len(results):.1f} per task)")
         print("=" * 60)
 
-        eval_data = build_eval_metrics(results)
-        eval_data["_meta"] = {
-            "eval_prompts_version": args.eval_prompts,
-            "tasks_version": args.tasks_file,
-        }
-        out_path = Path(args.out) if args.out else eval_dir / "results.json"
-        out_path.write_text(json.dumps(eval_data, indent=2))
-        print(f"\nRaw results saved to: {out_path}")
-
-        eval_metrics_path = eval_dir / "eval_metrics.json"
-        eval_metrics_path.write_text(json.dumps(eval_data, indent=2))
-        print(f"Eval metrics saved to: {eval_metrics_path}")
+        if args.out:
+            eval_data = build_eval_metrics(results)
+            Path(args.out).write_text(json.dumps(eval_data, indent=2))
+            print(f"\nRaw results saved to: {args.out}")
 
         judgment = run_judge_single(client, results, args.max_iter, v1_prompts, eval_prompts)
+        db.save_judgment(conn, eval_run_id, "single", judgment)
         judge_template_key = "judge_single"
         primary_metrics = results
 
-    judge_path = eval_dir / "judgment.md"
-    judge_path.write_text(judgment)
-    print(f"Judgment saved to: {judge_path}\n")
+    print(f"\nJudgment saved to database.")
     print("=" * 60)
     print("JUDGE EVALUATION")
     print("=" * 60)
@@ -444,9 +465,9 @@ def main() -> None:
         meta_judgment = run_meta_judge(
             client, primary_metrics, judgment, eval_prompts, judge_template_key
         )
-        meta_path = eval_dir / "meta_judgment.md"
-        meta_path.write_text(meta_judgment)
-        print(f"\nMeta-judgment saved to: {meta_path}\n")
+        eval_run_id_for_meta = eval_run_id_v1 if args.compare else eval_run_id
+        db.save_judgment(conn, eval_run_id_for_meta, "meta", meta_judgment)
+        print(f"\nMeta-judgment saved to database.\n")
         print("=" * 60)
         print("META-JUDGE EVALUATION")
         print("=" * 60)
@@ -454,8 +475,7 @@ def main() -> None:
 
     if args.optimize:
         print("\nOptimizing prompts...")
-        current_toml_path = Path(__file__).parent / "prompts" / f"{args.prompts}.toml"
-        optimize_prompts(client, current_toml_path, judgment, timestamp, eval_prompts)
+        optimize_prompts(client, conn, args.prompts, judgment, timestamp, eval_prompts)
 
 
 if __name__ == "__main__":

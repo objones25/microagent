@@ -1,7 +1,11 @@
-import json
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import db as db_module
 
 
 @dataclass
@@ -30,9 +34,16 @@ class RunMetrics:
     test_revisions_approved: int = 0
     test_revision_reasoning: str = ""
 
+    # Test coverage (measured after successful ground-truth run)
+    test_coverage_pct: float = 0.0
+
+    # API retry tracking
+    api_retries: int = 0
+
     # Outcome
     success: bool = False
     failure_reason: str = ""
+    failure_category: str = ""   # "api_error" | "max_iterations" | "coverage" | "test_failure" | ""
 
     @property
     def total_duration_s(self) -> float:
@@ -61,8 +72,11 @@ class RunMetrics:
             "test_revisions_attempted": self.test_revisions_attempted,
             "test_revisions_approved": self.test_revisions_approved,
             "test_revision_reasoning": self.test_revision_reasoning,
+            "test_coverage_pct": round(self.test_coverage_pct, 1),
+            "api_retries": self.api_retries,
             "success": self.success,
             "failure_reason": self.failure_reason,
+            "failure_category": self.failure_category,
             "total_duration_s": round(self.total_duration_s, 3),
             "total_tool_calls": self.total_tool_calls,
         }
@@ -93,5 +107,13 @@ def setup_logging(task_dir: Path) -> logging.Logger:
     return logger
 
 
-def save_metrics(metrics: RunMetrics, task_dir: Path) -> None:
-    (task_dir / "metrics.json").write_text(json.dumps(metrics.to_dict(), indent=2))
+def save_metrics(
+    metrics: RunMetrics,
+    task_dir: Path,
+    conn: sqlite3.Connection | None = None,
+    eval_run_id: int | None = None,
+) -> None:
+    if conn is not None:
+        import db
+        db.save_task_result(conn, metrics, eval_run_id=eval_run_id)
+

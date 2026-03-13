@@ -1,0 +1,105 @@
+# easy
+Reverse a singly linked list and return the new head.
+Write a function two_sum(nums, target) that returns the indices of the two numbers that add up to target.
+Write a function is_valid(s) that checks whether a string of parentheses, brackets, and braces is valid.
+Write a function merge_sorted(a, b) that merges two sorted arrays into one sorted array.
+Write a function binary_search(arr, target) that returns the index of target in a sorted array, or -1 if not found.
+Write a recursive function fibonacci(n) that returns the nth Fibonacci number.
+Write a function flatten(nested) that flattens an arbitrarily nested list of lists into a flat list.
+Write a function merge_intervals(intervals) that merges overlapping intervals.
+Write a function max_subarray(nums) that returns the maximum subarray sum (Kadane's algorithm).
+Write a function rotate_matrix(matrix) that rotates an NxN matrix 90 degrees clockwise in-place.
+Write a function spiral_order(matrix) that returns the elements of a 2D matrix in spiral order.
+Write a function power_set(s) that returns all subsets of a set.
+Write a function count_islands(grid) that counts the number of islands in a binary grid using DFS.
+Write a function next_permutation(nums) that rearranges nums into the lexicographically next permutation in-place.
+Write a function missing_number(nums) that finds the missing number in a list containing n distinct integers in range [0, n].
+Write a function to_roman(num) and from_roman(s) that convert between integers and Roman numerals.
+Write a function pascal_triangle(n) that returns the first n rows of Pascal's triangle.
+Write a function move_zeros(nums) that moves all zeros to the end while maintaining relative order of non-zero elements.
+Write a function is_palindrome(s) that checks if a string is a palindrome, ignoring non-alphanumeric characters.
+Write a function number_to_words(n) that converts an integer to its English words representation.
+
+# standard
+Write a function that finds the longest common subsequence of two strings and returns the subsequence itself
+Write a function that solves the 0/1 knapsack problem given weights, values, and a capacity
+Write a function that finds all valid parenthesizations of n pairs of parentheses
+Write an LRUCache class with get and put methods using only a dict and a doubly-linked list — no OrderedDict
+Write a function that serializes a binary tree to a string and deserializes it back to a tree
+Write a function that implements run-length encoding and a companion function that decodes it
+Write a function that groups anagrams together from a list of strings
+Write a TokenBucket rate limiter class with an allow() method that returns True if a request is allowed
+Write a function that finds the longest increasing subsequence of a list of integers and returns its length
+Write a function that evaluates simple arithmetic expressions given as strings (supporting +, -, *, / and parentheses) without using eval()
+Implement a Trie data structure with insert(word), search(word), starts_with(prefix), and autocomplete(prefix) methods — autocomplete returns a sorted list of all words in the trie that begin with the given prefix
+Write a StreamingMedian class with add(num) and get_median() methods that maintain the running median in O(log n) per add using two heaps
+Implement Dijkstra's shortest path algorithm: given a weighted directed graph as an adjacency dict, return the shortest distances from a source node and reconstruct the full path to any given target node
+Implement an LFU (Least Frequently Used) cache with get(key) and put(key, value) — evicts the least frequently used key, with ties broken by least recently used, all operations O(1)
+Write a word_break_all function that returns all ways to segment a string into space-separated words from a given dictionary, returning a list of sentences (e.g. 'catsanddog' -> ['cats and dog', 'cat sand dog'])
+Implement a JSON parser that handles nested objects, arrays, strings (with escape sequences), numbers (int and float), booleans, and null — without using json.loads
+Write a topological_sort function for a directed graph given as an adjacency dict; it should return the sorted order if no cycle exists, or raise a ValueError naming a node in the cycle if one is detected
+Implement a min-heap from scratch (no heapq) with insert(val), extract_min(), and decrease_key(index, new_val) operations — all in O(log n)
+Write a diff function that takes two strings and returns a minimal list of Edit operations (each with type 'insert'/'delete', position, and character) that transforms the first string into the second, using the shortest edit distance
+Implement a ConsistentHashRing with add_node(name), remove_node(name), and get_node(key) — uses virtual nodes (configurable replication factor) to distribute keys evenly and minimize remapping when nodes are added or removed
+Write a function edit_distance(s1, s2) that computes the Levenshtein distance between two strings using dynamic programming.
+Write a function coin_change_ways(coins, amount) that counts the number of ways to make the given amount using the given coin denominations.
+Write a function longest_palindrome_subseq(s) that returns the length of the longest palindromic subsequence.
+Write a function longest_palindromic_substring(s) that returns the longest palindromic substring.
+Write a function min_path_sum(grid) that finds the minimum path sum from top-left to bottom-right of a grid.
+Write a function can_jump(nums) that determines if you can reach the last index from index 0 given jump lengths.
+Write a function word_search(board, word) that returns True if the word exists in the grid following adjacent cells.
+Write a function unique_paths(m, n) that counts unique paths from top-left to bottom-right of an m x n grid.
+Write a function decode_ways(s) that counts the number of ways to decode a digit string where 'A'=1, ..., 'Z'=26.
+Write a function max_profit_cooldown(prices) that finds the maximum profit with a cooldown day after each sell.
+Write a function trap_rain(height) that computes the total water trapped after raining.
+Write a function min_window(s, t) that finds the minimum window substring of s containing all characters of t.
+Write a function zigzag_level_order(root) that returns the zigzag level-order traversal of a binary tree.
+Write a function build_tree(preorder, inorder) that constructs a binary tree from preorder and inorder traversal lists.
+Write a function is_valid_bst(root) that validates whether a binary tree is a valid BST.
+Write a function lca(root, p, q) that finds the lowest common ancestor of two nodes in a binary tree.
+Write a function diameter_of_tree(root) that computes the diameter (longest path between any two nodes) of a binary tree.
+Write a function path_sum_iii(root, target) that counts paths that sum to target (paths can start and end at any node).
+Write a function k_closest_points(points, k) that returns the k closest points to the origin.
+Write a function top_k_frequent(nums, k) that returns the k most frequent elements.
+Write a function can_finish(num_courses, prerequisites) that determines if all courses can be finished given prereqs (cycle detection).
+Write a function clone_graph(node) that returns a deep copy of an undirected graph.
+Write a function word_ladder_length(begin_word, end_word, word_list) that finds the length of the shortest transformation sequence.
+Write a function permutations(nums) that returns all permutations of a list of distinct integers.
+Write a function combinations(n, k) that returns all combinations of k numbers from 1 to n.
+Write a function solve_n_queens(n) that returns all distinct solutions to the N-Queens puzzle.
+Write a function solve_sudoku(board) that solves a Sudoku puzzle in-place.
+Write a function basic_calculator(s) that evaluates a string expression with +, -, and parentheses.
+Write a function decode_string(s) that decodes an encoded string like '3[a2[b]]' -> 'abbabbabb'.
+Write a function matrix_chain_multiplication(dims) that returns the minimum number of scalar multiplications needed to multiply a chain of matrices.
+
+# hard
+Implement a Segment Tree that supports range sum queries and point updates in O(log n).
+Implement a Fenwick Tree (Binary Indexed Tree) with update(i, delta) and prefix_sum(i) in O(log n).
+Implement a Union-Find data structure with path compression and union by rank.
+Implement suffix array construction for a string and use it to find the longest repeated substring.
+Implement the KMP string matching algorithm: given a pattern and text, return all starting indices of pattern in text.
+Implement the Aho-Corasick algorithm for multi-pattern string matching.
+Implement maximum flow using Edmonds-Karp (BFS-based Ford-Fulkerson) on a capacity graph.
+Implement Tarjan's algorithm for finding strongly connected components in a directed graph.
+Implement an algorithm to find all articulation points in an undirected graph.
+Implement Kruskal's algorithm for finding the minimum spanning tree of a weighted undirected graph.
+Implement A* search on a weighted grid from start to goal, returning the optimal path.
+Implement TSP (Travelling Salesman Problem) using bitmask DP for n <= 20 cities.
+Implement the optimal BST problem: given keys and frequencies, find the minimum cost BST.
+Implement a Treap (randomized BST) with insert, delete, and search operations.
+Implement an AVL tree with insert, delete, and rotations maintaining height-balance.
+Implement a persistent segment tree that supports point updates and range queries on historical versions.
+Implement a skip list with insert, delete, and search in expected O(log n).
+Implement a Count-Min Sketch for approximate frequency counting with configurable error bounds.
+Implement square root decomposition for range sum queries with point updates.
+Implement offline LCA (Lowest Common Ancestor) using binary lifting.
+Implement 2-SAT (two-variable boolean satisfiability) and determine if a formula is satisfiable.
+Implement the Hungarian algorithm for minimum-cost bipartite matching.
+Implement Bellman-Ford with negative cycle detection on a directed weighted graph.
+Implement modular matrix exponentiation to compute the nth Fibonacci number in O(log n).
+Implement the Burrows-Wheeler Transform and its inverse.
+Implement a suffix automaton that accepts all suffixes of a string and counts distinct substrings.
+Implement a palindrome automaton (Eertree) that finds all distinct palindromic substrings and their counts.
+Implement heavy-light decomposition on a tree for path sum queries.
+Implement an interval tree that supports insert, delete, and stabbing queries (find all intervals containing a point).
+Implement the Stoer-Wagner algorithm for finding the global minimum cut in an undirected graph.

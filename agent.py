@@ -1,3 +1,4 @@
+import sqlite3
 import subprocess
 import sys
 import time
@@ -13,11 +14,44 @@ from tools import TOOL_SCHEMAS, dispatch_tool
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
+_RETRYABLE = (
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+    anthropic.APIConnectionError,
+)
 
-def load_prompts(version: str = "v1", path: Optional[Path] = None) -> dict:
+
+def load_prompts(
+    version: str = "v1",
+    conn: Optional[sqlite3.Connection] = None,
+    path: Optional[Path] = None,
+) -> dict:
+    if conn is not None:
+        import db
+        return db.load_prompts(conn, version)
     target = path or (Path(__file__).parent / "prompts" / f"{version}.toml")
     with open(target, "rb") as f:
         return tomllib.load(f)
+
+
+def _parse_coverage_pct(output: str) -> float:
+    """Parse solution.py coverage % from pytest-cov term-missing output.
+
+    Looks for a line starting with 'solution.py' or 'solution ' and extracts
+    the percentage column, e.g. 'solution.py   45   0   100%' → 100.0.
+    Returns 0.0 if not found or unparseable.
+    """
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("solution.py") or stripped.startswith("solution "):
+            parts = stripped.split()
+            for part in reversed(parts):
+                if part.endswith("%"):
+                    try:
+                        return float(part[:-1])
+                    except ValueError:
+                        pass
+    return 0.0
 
 
 def _parse_pytest_result(output: str) -> tuple[str, list[str]]:
@@ -45,20 +79,29 @@ class AgentLoop:
         task_dir: Path,
         model: str = DEFAULT_MODEL,
         max_iterations: int = 10,
+        max_retries: int = 3,
         prompts: Optional[dict] = None,
         prompts_version: str = "v1",
         logger=None,
         allow_test_revision: bool = False,
         auto_approve_revision: bool = False,
+        db_conn: Optional[sqlite3.Connection] = None,
+        min_coverage: float = 0.0,
     ) -> None:
         self.client = client
         self.task_dir = task_dir
         self.model = model
         self.max_iterations = max_iterations
+        self.max_retries = max_retries
         self.prompts_version = prompts_version
         self.allow_test_revision = allow_test_revision
         self.auto_approve_revision = auto_approve_revision
-        self._prompts = prompts if prompts is not None else load_prompts(prompts_version)
+        self.min_coverage = min_coverage
+        self._db_conn = db_conn
+        self._prompts = (
+            prompts if prompts is not None
+            else load_prompts(prompts_version, conn=db_conn)
+        )
         self._logger = logger if logger is not None else setup_logging(task_dir)
         self.metrics = RunMetrics(
             task_prompt="",
@@ -69,6 +112,26 @@ class AgentLoop:
         )
 
     # ------------------------------------------------------------------
+    # API call with exponential backoff retry
+    # ------------------------------------------------------------------
+
+    def _call_api_with_retry(self, **kwargs):
+        delay = 2.0
+        for attempt in range(self.max_retries + 1):
+            try:
+                return self.client.messages.create(**kwargs)
+            except _RETRYABLE as e:
+                if attempt == self.max_retries:
+                    raise
+                self.metrics.api_retries += 1
+                self._logger.warning(
+                    f"  API error ({type(e).__name__}), retrying in {delay:.0f}s "
+                    f"(attempt {attempt + 1}/{self.max_retries})..."
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 60.0)
+
+    # ------------------------------------------------------------------
     # Phase 1: generate locked test file
     # ------------------------------------------------------------------
 
@@ -76,7 +139,7 @@ class AgentLoop:
         self.metrics.task_prompt = user_prompt
         self._logger.info("Generating test file...")
         start = time.perf_counter()
-        response = self.client.messages.create(
+        response = self._call_api_with_retry(
             model=self.model,
             max_tokens=4096,
             system=self._prompts["test_generation"]["system"],
@@ -135,7 +198,7 @@ class AgentLoop:
 
         while iteration < self.max_iterations:
             self.metrics.impl_llm_calls += 1
-            response = self.client.messages.create(
+            response = self._call_api_with_retry(
                 model=self.model,
                 max_tokens=8096,
                 system=self._prompts["implementation"]["system"],
@@ -160,6 +223,17 @@ class AgentLoop:
                     if _tests_passed(final_output):
                         self.metrics.impl_duration_s = time.perf_counter() - impl_start
                         self.metrics.impl_iterations = total_iterations
+                        cov = self._measure_coverage()
+                        self.metrics.test_coverage_pct = cov
+                        cov_str = f"{cov:.0f}%" if cov > 0 else "n/a"
+                        self._logger.info(f"  → coverage: {cov_str}")
+                        if self.min_coverage > 0 and cov < self.min_coverage:
+                            self.metrics.success = False
+                            self.metrics.failure_reason = (
+                                f"Test coverage {cov:.0f}% below minimum {self.min_coverage:.0f}%."
+                            )
+                            self.metrics.failure_category = "coverage"
+                            return False, self.metrics.failure_reason
                         self.metrics.success = True
                         return True, final_output
                     last_output = final_output
@@ -184,6 +258,7 @@ class AgentLoop:
                 self.metrics.impl_iterations = total_iterations
                 self.metrics.success = False
                 self.metrics.failure_reason = "Agent stopped without passing tests."
+                self.metrics.failure_category = "test_failure"
                 return False, f"Agent stopped without passing tests.\n{final_text}\n\n{last_output}"
 
             if not tool_calls:
@@ -191,6 +266,7 @@ class AgentLoop:
                 self.metrics.impl_iterations = total_iterations
                 self.metrics.success = False
                 self.metrics.failure_reason = "Agent stopped requesting tools before tests passed."
+                self.metrics.failure_category = "test_failure"
                 return False, "Agent stopped requesting tools before tests passed."
 
             # Append assistant turn
@@ -291,7 +367,24 @@ class AgentLoop:
         self.metrics.impl_iterations = total_iterations
         self.metrics.success = False
         self.metrics.failure_reason = f"Max iterations ({self.max_iterations}) reached."
+        self.metrics.failure_category = "max_iterations"
         return False, f"Max iterations ({self.max_iterations}) reached.\n{last_output}"
+
+    def _measure_coverage(self) -> float:
+        """Run pytest-cov on solution.py and return coverage percentage (0–100).
+
+        Returns 0.0 if pytest-cov is not installed or coverage cannot be parsed.
+        """
+        result = subprocess.run(
+            ["pytest", "solution_test.py", "--cov=solution",
+             "--cov-report=term-missing", "--tb=no", "-q"],
+            cwd=str(self.task_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = result.stdout + result.stderr
+        return _parse_coverage_pct(output)
 
     def _prompt_test_revision_approval(
         self, reasoning: str, old: str, new: str
@@ -344,7 +437,7 @@ class AgentLoop:
         success, message = self.run_implementation_loop(user_prompt, test_content)
 
         # Save metrics
-        save_metrics(self.metrics, self.task_dir)
+        save_metrics(self.metrics, self.task_dir, conn=self._db_conn)
         self._logger.debug(
             f"Metrics: {self.metrics.impl_iterations} iterations, "
             f"{self.metrics.impl_llm_calls} LLM calls, "

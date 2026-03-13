@@ -9,9 +9,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import anthropic
+
 from agent import (
     AgentLoop,
     DEFAULT_MODEL,
+    _RETRYABLE,
+    _parse_coverage_pct,
     _parse_pytest_result,
     _tests_passed,
     load_prompts,
@@ -42,6 +46,31 @@ class TestLoadPrompts:
         p.write_text(toml_text)
         result = load_prompts(path=p)
         assert result["test_generation"]["system"] == "s"
+
+
+# ---------------------------------------------------------------------------
+# _parse_coverage_pct
+# ---------------------------------------------------------------------------
+
+class TestParseCoveragePct:
+    def test_full_coverage(self):
+        output = (
+            "Name          Stmts   Miss  Cover\n"
+            "solution.py      45      0   100%\n"
+            "TOTAL            45      0   100%\n"
+        )
+        assert _parse_coverage_pct(output) == 100.0
+
+    def test_partial_coverage(self):
+        output = "solution.py      45     10    78%\n"
+        assert _parse_coverage_pct(output) == 78.0
+
+    def test_no_solution_line(self):
+        output = "== 5 passed in 0.10s ==\n"
+        assert _parse_coverage_pct(output) == 0.0
+
+    def test_empty_string(self):
+        assert _parse_coverage_pct("") == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +296,39 @@ class TestRunImplementationLoopEndTurn:
             success, msg = loop.run_implementation_loop("task", "tests")
         assert not success
         assert loop.metrics.failure_reason == "Agent stopped without passing tests."
+
+    def test_end_turn_coverage_stored_in_metrics(self, tmp_task_dir, mock_client):
+        (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
+        mock_client.messages.create.return_value = make_response(
+            [make_text_block("done")], stop_reason="end_turn"
+        )
+        cov_output = "solution.py      20      0   100%\nTOTAL  20  0  100%\n"
+        with patch("agent.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout="== 3 passed in 0.05s ==\n", stderr=""),
+                SimpleNamespace(stdout=cov_output, stderr=""),
+            ]
+            loop = _make_loop(tmp_task_dir, mock_client)
+            success, _ = loop.run_implementation_loop("task", "tests")
+        assert success
+        assert loop.metrics.test_coverage_pct == 100.0
+
+    def test_end_turn_coverage_below_min_fails(self, tmp_task_dir, mock_client):
+        (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
+        mock_client.messages.create.return_value = make_response(
+            [make_text_block("done")], stop_reason="end_turn"
+        )
+        cov_output = "solution.py      20      6    70%\n"
+        with patch("agent.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout="== 3 passed in 0.05s ==\n", stderr=""),
+                SimpleNamespace(stdout=cov_output, stderr=""),
+            ]
+            loop = _make_loop(tmp_task_dir, mock_client, {"min_coverage": 80.0})
+            success, msg = loop.run_implementation_loop("task", "tests")
+        assert not success
+        assert "coverage" in loop.metrics.failure_reason.lower()
+        assert loop.metrics.test_coverage_pct == 70.0
 
     def test_end_turn_no_text_block(self, tmp_task_dir, mock_client):
         """end_turn with no text block in content → final_text is empty."""
@@ -498,6 +560,7 @@ class TestTestRevision:
                 mock_run.side_effect = [
                     SimpleNamespace(stdout="== 1 failed in 0.1s ==\n", stderr=""),  # turn 2 ground-truth
                     SimpleNamespace(stdout="== 1 passed in 0.1s ==\n", stderr=""),  # turn 4 ground-truth
+                    SimpleNamespace(stdout="solution.py  10  0  100%\n", stderr=""),  # coverage run
                 ]
                 loop = _make_loop(tmp_task_dir, mock_client,
                                   {"allow_test_revision": True, "auto_approve_revision": True})
@@ -564,6 +627,7 @@ class TestTestRevision:
                 mock_run.side_effect = [
                     SimpleNamespace(stdout="== 1 failed in 0.1s ==\n", stderr=""),  # turn 2
                     SimpleNamespace(stdout="== 1 passed in 0.1s ==\n", stderr=""),  # turn 4
+                    SimpleNamespace(stdout="solution.py  10  0  100%\n", stderr=""),  # coverage run
                 ]
                 loop = _make_loop(tmp_task_dir, mock_client,
                                   {"allow_test_revision": True, "auto_approve_revision": True})
@@ -685,3 +749,87 @@ class TestAgentLoopRun:
             with patch("builtins.input", side_effect=KeyboardInterrupt):
                 with pytest.raises(SystemExit):
                     loop.run("task", auto_approve=False)
+
+
+# ---------------------------------------------------------------------------
+# _call_api_with_retry
+# ---------------------------------------------------------------------------
+
+class TestCallApiWithRetry:
+    def _make_loop(self, tmp_path, max_retries=3):
+        client = MagicMock()
+        loop = AgentLoop(
+            client=client,
+            task_dir=tmp_path,
+            prompts=MINIMAL_PROMPTS,
+            logger=MagicMock(),
+            max_retries=max_retries,
+        )
+        return loop
+
+    def test_succeeds_on_first_attempt(self, tmp_path):
+        loop = self._make_loop(tmp_path)
+        fake_response = MagicMock()
+        loop.client.messages.create.return_value = fake_response
+
+        result = loop._call_api_with_retry(model="m", max_tokens=10, messages=[])
+
+        assert result is fake_response
+        assert loop.metrics.api_retries == 0
+        loop.client.messages.create.assert_called_once()
+
+    @patch("agent.time.sleep")
+    def test_retries_on_rate_limit_error(self, mock_sleep, tmp_path):
+        loop = self._make_loop(tmp_path)
+        fake_response = MagicMock()
+        rate_limit_err = anthropic.RateLimitError.__new__(anthropic.RateLimitError)
+        loop.client.messages.create.side_effect = [
+            rate_limit_err,
+            rate_limit_err,
+            fake_response,
+        ]
+
+        result = loop._call_api_with_retry(model="m", max_tokens=10, messages=[])
+
+        assert result is fake_response
+        assert loop.metrics.api_retries == 2
+        assert mock_sleep.call_count == 2
+
+    @patch("agent.time.sleep")
+    def test_retries_on_internal_server_error(self, mock_sleep, tmp_path):
+        loop = self._make_loop(tmp_path)
+        fake_response = MagicMock()
+        server_err = anthropic.InternalServerError.__new__(anthropic.InternalServerError)
+        loop.client.messages.create.side_effect = [
+            server_err,
+            fake_response,
+        ]
+
+        result = loop._call_api_with_retry(model="m", max_tokens=10, messages=[])
+
+        assert result is fake_response
+        assert loop.metrics.api_retries == 1
+        assert mock_sleep.call_count == 1
+
+    @patch("agent.time.sleep")
+    def test_retries_exhausted_raises(self, mock_sleep, tmp_path):
+        loop = self._make_loop(tmp_path, max_retries=3)
+        server_err = anthropic.InternalServerError.__new__(anthropic.InternalServerError)
+        loop.client.messages.create.side_effect = server_err
+
+        with pytest.raises(anthropic.InternalServerError):
+            loop._call_api_with_retry(model="m", max_tokens=10, messages=[])
+
+        assert loop.metrics.api_retries == 3
+        assert mock_sleep.call_count == 3
+
+    def test_non_retryable_error_not_retried(self, tmp_path):
+        loop = self._make_loop(tmp_path)
+        bad_req = anthropic.BadRequestError.__new__(anthropic.BadRequestError)
+        loop.client.messages.create.side_effect = bad_req
+
+        with pytest.raises(anthropic.BadRequestError):
+            loop._call_api_with_retry(model="m", max_tokens=10, messages=[])
+
+        assert loop.metrics.api_retries == 0
+        loop.client.messages.create.assert_called_once()
