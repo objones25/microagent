@@ -51,7 +51,7 @@ uv run python microagent.py "Write RLE encode/decode" --allow-test-revision
 | `--task-dir`              | `task-YYYYMMDD-HHMMSS/` | Directory for task files                                                       |
 | `--model`                 | `claude-sonnet-4-6`     | Claude model to use                                                            |
 | `--max-iterations`        | `10`                    | Max write→run cycles before giving up                                          |
-| `--prompts`               | `v2.3`                  | Agent prompts version (key in `microagent.db`, seeded from `prompts/<v>.toml`) |
+| `--prompts`               | `v2.4`                  | Agent prompts version (key in `microagent.db`, seeded from `prompts/<v>.toml`) |
 | `--allow-test-revision`   | off                     | When the agent stops without passing, offer it a chance to revise the tests    |
 | `--auto-approve-revision` | off                     | Automatically approve test revisions without prompting                         |
 
@@ -96,7 +96,7 @@ uv run python eval.py --max-iter 5                                       # limit
 uv run python eval.py --out results.json                                 # save raw results to file
 uv run python eval.py --optimize                                         # save an improved prompt version to DB after judging
 uv run python eval.py --meta-judge                                       # also evaluate the judge's output quality
-uv run python eval.py --eval-prompts eval-v1.1                           # use a different judge/optimizer prompt version
+uv run python eval.py --eval-prompts eval-v1.2                           # use a different judge/optimizer prompt version
 uv run python eval.py --allow-test-revision --auto-approve-revision      # enable non-interactive test revision
 ```
 
@@ -106,14 +106,14 @@ Tasks are randomly sampled from the DB pool (100 tasks across easy/standard/hard
 
 | Flag                      | Default   | Description                                                          |
 | ------------------------- | --------- | -------------------------------------------------------------------- |
-| `--prompts`               | `v2.3`    | Agent prompts version to evaluate                                    |
+| `--prompts`               | `v2.4`    | Agent prompts version to evaluate                                    |
 | `--compare`               | —         | Second prompts version for A/B test                                  |
 | `--tasks`                 | `10`      | Number of tasks to randomly sample from DB                           |
 | `--max-iter`              | `5`       | Max implementation iterations per task                               |
 | `--out`                   | —         | Write raw results JSON to this path                                  |
 | `--optimize`              | off       | After judging, generate an improved prompt version and save it to DB |
 | `--meta-judge`            | off       | After judging, evaluate the judge's own output quality               |
-| `--eval-prompts`          | `eval-v1.1` | Judge/optimizer/meta-judge prompts version                         |
+| `--eval-prompts`          | `eval-v1.2` | Judge/optimizer/meta-judge prompts version                         |
 | `--allow-test-revision`   | off       | Allow agent to revise tests when stuck                               |
 | `--auto-approve-revision` | off       | Auto-approve test revisions (required for non-interactive eval use)  |
 
@@ -160,12 +160,12 @@ The DB is seeded on first run from `prompts/*.toml` (prompt versions) and `evals
 
 ```
 microagent/
-├── agent.py          # AgentLoop: test generation + implementation loop + metrics
-├── db.py             # SQLite schema, seed, and CRUD layer
+├── agent.py          # AgentLoop + AgentConfig: test generation + implementation loop + metrics
+├── db.py             # SQLite schema, seed, CRUD layer + Task dataclass
 ├── eval.py           # Evaluation harness: task suite, judge, A/B comparison, meta-judge
 ├── logger.py         # RunMetrics dataclass, setup_logging(), save_metrics()
 ├── microagent.py     # CLI entry point
-├── tools.py          # Tool schemas + implementations (read, write, pytest, docs, search, calc)
+├── tools.py          # Tool schemas + implementations (read, write, pytest, docs, search, run_python, calc)
 ├── evals/
 │   ├── tasks.txt     # Task pool — 100 tasks across easy/standard/hard tiers
 │   ├── tasks-v1.txt  # Legacy task list (v1, 10 tasks)
@@ -175,9 +175,11 @@ microagent/
 │   ├── v2.toml       # Agent prompts v2
 │   ├── v2.1.toml     # Agent prompts v2.1
 │   ├── v2.2.toml     # Agent prompts v2.2
-│   ├── v2.3.toml     # Agent prompts v2.3 (current best)
+│   ├── v2.3.toml     # Agent prompts v2.3
+│   ├── v2.4.toml     # Agent prompts v2.4 (current best)
 │   ├── eval-v1.toml  # Eval prompts v1
-│   └── eval-v1.1.toml # Eval prompts v1.1 (current best)
+│   ├── eval-v1.1.toml # Eval prompts v1.1
+│   └── eval-v1.2.toml # Eval prompts v1.2 (current best)
 └── tests/
     ├── conftest.py   # Shared fixtures and mock helpers
     ├── test_agent.py
@@ -194,10 +196,10 @@ microagent/
 Loaded from `microagent.db` at runtime (seeded from `prompts/*.toml` on first run). To iterate:
 
 ```bash
-cp prompts/v2.3.toml prompts/v3.toml
+cp prompts/v2.4.toml prompts/v3.toml
 # edit prompts/v3.toml, then reseed:
 rm microagent.db
-uv run python eval.py --compare v3     # A/B test v2.3 vs v3
+uv run python eval.py --compare v3     # A/B test v2.4 vs v3
 ```
 
 | Section               | Key        | Used as                                                                 |
@@ -218,13 +220,14 @@ uv run python eval.py --compare v3     # A/B test v2.3 vs v3
 | `v2.1`  | Derivation comments for numeric assertions; concrete always-True anti-pattern list; algorithm variant verification step; function name consistency |
 | `v2.2`  | Strengthened `[test_revision]`: requires calculator proof before rewriting tests; defaults to fixing implementation                                |
 | `v2.3`  | Tautological test rules: ban captured-but-unasserted return values; separate in-place mutation vs return value tests; empty-argument boundary tests; precondition violation tests; derivation comments extended to graph algorithms; implementation Python version comments |
+| `v2.4`  | Based on auto-optimized `20260313-125033`: membership-assertion verification before writing `not in` tests; combinatorial formula verification with small-n enumeration; type-only assertions must be in same function as value assertion; `n=0` constructor tests for data structures; minimal-instance interface contract tests; `TEST_BUG:` must cite exact assertion line and correct value |
 
 ### Eval prompts
 
 Controls the judge, A/B judge, prompt optimizer, and meta-judge:
 
 ```bash
-cp prompts/eval-v1.1.toml prompts/eval-v2.toml
+cp prompts/eval-v1.2.toml prompts/eval-v2.toml
 # edit, reseed, then use:
 rm microagent.db && uv run python eval.py --eval-prompts eval-v2
 ```
@@ -243,6 +246,7 @@ rm microagent.db && uv run python eval.py --eval-prompts eval-v2
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `eval-v1`   | Baseline                                                                                                                                                                                                                               |
 | `eval-v1.1` | Verification constraints (no fabricating text/tools); placeholder guards (EVALUATION BLOCKED if vars unfilled); implementation depth requirements; data reconciliation; system-level design section; REPLACEMENT/NEW ADDITION labeling |
+| `eval-v1.2` | Adds `api_retries` and `failure_category` to judge context; `failure_category_counts` breakdown in A/B summary; judge instructed to distinguish API errors from agent failures |
 
 ### Task pool
 
@@ -260,7 +264,8 @@ rm microagent.db && uv run python eval.py --eval-prompts eval-v2
 | `context7_docs`    | Fetch structured library documentation              |
 | `firecrawl_scrape` | Scrape a URL as markdown                            |
 | `firecrawl_search` | Web search with content snippets                    |
-| `calculator`       | Safe AST-based math expression evaluator            |
+| `run_python`       | Execute a Python snippet and return stdout/stderr   |
+| `calculator`       | Safe AST-based math evaluator (supports string literals: `len("hello")`) |
 
 ---
 
