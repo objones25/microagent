@@ -1,0 +1,10 @@
+Write a function that finds the longest common subsequence of two strings and returns the subsequence itself
+Write a function that solves the 0/1 knapsack problem given weights, values, and a capacity
+Write a function that finds all valid parenthesizations of n pairs of parentheses
+Write an LRUCache class with get and put methods using only a dict and a doubly-linked list — no OrderedDict
+Write a function that serializes a binary tree to a string and deserializes it back to a tree
+Write a function that implements run-length encoding and a companion function that decodes it
+Write a function that groups anagrams together from a list of strings
+Write a TokenBucket rate limiter class with an allow() method that returns True if a request is allowed
+Write a function that finds the longest increasing subsequence of a list of integers and returns its length
+Write a function that evaluates simple arithmetic expressions given as strings (supporting +, -, *, / and parentheses) without using eval()
