@@ -478,26 +478,29 @@ class TestTestRevision:
         revised = "def test_new(): assert True\n"
         (tmp_task_dir / "solution_test.py").write_text(initial)
 
-        # Turn 1: write solution.py + run → iteration becomes 1
-        # Turn 2: write solution_test.py (revision offered at iteration=1)
-        # Turn 3: end_turn → pytest passes
+        # Turn 1: write solution.py + run → iteration=1, tests still fail
+        # Turn 2: end_turn (agent stops) → ground truth fails → revision offered → continue
+        # Turn 3: agent writes solution_test.py
+        # Turn 4: end_turn → ground truth passes
         tb_w = make_tool_block("write_file", {"path": "solution.py", "content": "def f(): pass\n"}, "tw")
         tb_r = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         tb_rev = make_tool_block("write_file", {"path": "solution_test.py", "content": revised}, "tv")
 
         mock_client.messages.create.side_effect = [
             make_response([tb_w, tb_r]),
+            make_response([make_text_block("stopping")], stop_reason="end_turn"),
             make_response([make_text_block("I think tests are wrong"), tb_rev]),
             make_response([make_text_block("done")], stop_reason="end_turn"),
         ]
 
         with patch("agent.dispatch_tool", side_effect=self._make_dispatch(tmp_task_dir)):
             with patch("agent.subprocess.run") as mock_run:
-                mock_run.return_value = SimpleNamespace(
-                    stdout="== 1 passed in 0.1s ==\n", stderr=""
-                )
+                mock_run.side_effect = [
+                    SimpleNamespace(stdout="== 1 failed in 0.1s ==\n", stderr=""),  # turn 2 ground-truth
+                    SimpleNamespace(stdout="== 1 passed in 0.1s ==\n", stderr=""),  # turn 4 ground-truth
+                ]
                 loop = _make_loop(tmp_task_dir, mock_client,
-                                  {"allow_test_revision": 1, "auto_approve_revision": True})
+                                  {"allow_test_revision": True, "auto_approve_revision": True})
                 success, _ = loop.run_implementation_loop("task", initial)
 
         assert success
@@ -510,12 +513,16 @@ class TestTestRevision:
         revised = "def test_new(): assert True\n"
         (tmp_task_dir / "solution_test.py").write_text(initial)
 
+        # Turn 1: write+run fails, Turn 2: end_turn → revision offered
+        # Turn 3: agent writes test file → denied → original restored
+        # Turn 4: end_turn → _revision_offered=True → return failure
         tb_w = make_tool_block("write_file", {"path": "solution.py", "content": "def f(): pass\n"}, "tw")
         tb_r = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         tb_rev = make_tool_block("write_file", {"path": "solution_test.py", "content": revised}, "tv")
 
         mock_client.messages.create.side_effect = [
             make_response([tb_w, tb_r]),
+            make_response([make_text_block("stopping")], stop_reason="end_turn"),
             make_response([tb_rev]),
             make_response([make_text_block("done")], stop_reason="end_turn"),
         ]
@@ -526,11 +533,10 @@ class TestTestRevision:
                     stdout="== 1 failed in 0.1s ==\n", stderr=""
                 )
                 with patch("builtins.input", return_value="N"):
-                    loop = _make_loop(tmp_task_dir, mock_client, {"allow_test_revision": 1})
+                    loop = _make_loop(tmp_task_dir, mock_client, {"allow_test_revision": True})
                     success, _ = loop.run_implementation_loop("task", initial)
 
         assert not success
-        # Original test file restored
         assert (tmp_task_dir / "solution_test.py").read_text() == initial
         assert loop.metrics.test_revisions_attempted == 1
         assert loop.metrics.test_revisions_approved == 0
@@ -540,26 +546,30 @@ class TestTestRevision:
         initial = "def test_old(): assert True\n"
         (tmp_task_dir / "solution_test.py").write_text(initial)
 
+        # Turn 1: write+run fails, Turn 2: end_turn → revision offered
+        # Turn 3: agent writes solution.py (not test file), Turn 4: end_turn → passes
         tb_w = make_tool_block("write_file", {"path": "solution.py", "content": "def f(): pass\n"}, "tw")
         tb_r = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         tb_sol = make_tool_block("write_file", {"path": "solution.py", "content": "def f(): return 1\n"}, "tw2")
 
         mock_client.messages.create.side_effect = [
             make_response([tb_w, tb_r]),
+            make_response([make_text_block("stopping")], stop_reason="end_turn"),
             make_response([tb_sol]),
             make_response([make_text_block("done")], stop_reason="end_turn"),
         ]
 
         with patch("agent.dispatch_tool", side_effect=self._make_dispatch(tmp_task_dir)):
             with patch("agent.subprocess.run") as mock_run:
-                mock_run.return_value = SimpleNamespace(
-                    stdout="== 1 failed in 0.1s ==\n", stderr=""
-                )
+                mock_run.side_effect = [
+                    SimpleNamespace(stdout="== 1 failed in 0.1s ==\n", stderr=""),  # turn 2
+                    SimpleNamespace(stdout="== 1 passed in 0.1s ==\n", stderr=""),  # turn 4
+                ]
                 loop = _make_loop(tmp_task_dir, mock_client,
-                                  {"allow_test_revision": 1, "auto_approve_revision": True})
+                                  {"allow_test_revision": True, "auto_approve_revision": True})
                 loop.run_implementation_loop("task", initial)
 
-        # auto_approve_revision=True but test file was NOT changed → no revision recorded
+        # test file was NOT changed → no revision approved
         assert loop.metrics.test_revisions_approved == 0
         assert loop.metrics.test_revisions_attempted == 1
 

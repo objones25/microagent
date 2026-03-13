@@ -55,10 +55,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--allow-test-revision",
-        type=int,
-        default=0,
-        metavar="N",
-        help="After N failing iterations, offer the agent a chance to revise solution_test.py (requires user approval). 0 = disabled (default: 0)",
+        action="store_true",
+        help="When the agent stops without passing tests, offer it a chance to revise solution_test.py (requires user approval unless --auto-approve-revision is set)",
     )
     args = parser.parse_args()
 

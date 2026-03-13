@@ -61,14 +61,14 @@ class TestMain:
         monkeypatch.setattr(
             sys, "argv",
             ["microagent.py", "do thing", "--task-dir", str(tmp_path),
-             "--allow-test-revision", "3"]
+             "--allow-test-revision"]
         )
         with patch("microagent.anthropic.Anthropic"):
             with patch("microagent.AgentLoop") as MockLoop:
                 MockLoop.return_value = MagicMock()
                 microagent.main()
         _, kwargs = MockLoop.call_args
-        assert kwargs["allow_test_revision"] == 3
+        assert kwargs["allow_test_revision"] is True
 
     def test_custom_model(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")

@@ -48,7 +48,7 @@ class AgentLoop:
         prompts: Optional[dict] = None,
         prompts_version: str = "v1",
         logger=None,
-        allow_test_revision: int = 0,
+        allow_test_revision: bool = False,
         auto_approve_revision: bool = False,
     ) -> None:
         self.client = client
@@ -123,7 +123,8 @@ class AgentLoop:
         )
 
         messages: list[dict] = [{"role": "user", "content": user_content}]
-        iteration = 0
+        iteration = 0        # resets on test revision approval (controls max-iter budget)
+        total_iterations = 0  # never resets — used for metrics
         last_output = ""
         impl_start = time.perf_counter()
         pending_write = False
@@ -133,21 +134,6 @@ class AgentLoop:
         _original_test_content = None
 
         while iteration < self.max_iterations:
-            # Offer test revision if enabled and threshold reached
-            if (
-                self.allow_test_revision > 0
-                and iteration >= self.allow_test_revision
-                and not _revision_offered
-            ):
-                _revision_offered = True
-                _original_test_content = (self.task_dir / "solution_test.py").read_text()
-                messages.append({
-                    "role": "user",
-                    "content": self._prompts["test_revision"]["user"].format(n=iteration),
-                })
-                self.metrics.test_revisions_attempted += 1
-                self._logger.info(f"  [test revision offered after {iteration} failing iterations]")
-
             self.metrics.impl_llm_calls += 1
             response = self.client.messages.create(
                 model=self.model,
@@ -173,23 +159,36 @@ class AgentLoop:
                     final_output = result.stdout + result.stderr
                     if _tests_passed(final_output):
                         self.metrics.impl_duration_s = time.perf_counter() - impl_start
-                        self.metrics.impl_iterations = iteration
+                        self.metrics.impl_iterations = total_iterations
                         self.metrics.success = True
                         return True, final_output
                     last_output = final_output
+
+                # Offer revision once when agent stops without passing
+                if self.allow_test_revision and not _revision_offered:
+                    _revision_offered = True
+                    _original_test_content = (self.task_dir / "solution_test.py").read_text()
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({
+                        "role": "user",
+                        "content": self._prompts["test_revision"]["user"],
+                    })
+                    self.metrics.test_revisions_attempted += 1
+                    self._logger.info("  [test revision offered — agent stopped without passing]")
+                    continue
 
                 final_text = next(
                     (b.text for b in response.content if b.type == "text"), ""
                 )
                 self.metrics.impl_duration_s = time.perf_counter() - impl_start
-                self.metrics.impl_iterations = iteration
+                self.metrics.impl_iterations = total_iterations
                 self.metrics.success = False
                 self.metrics.failure_reason = "Agent stopped without passing tests."
                 return False, f"Agent stopped without passing tests.\n{final_text}\n\n{last_output}"
 
             if not tool_calls:
                 self.metrics.impl_duration_s = time.perf_counter() - impl_start
-                self.metrics.impl_iterations = iteration
+                self.metrics.impl_iterations = total_iterations
                 self.metrics.success = False
                 self.metrics.failure_reason = "Agent stopped requesting tools before tests passed."
                 return False, "Agent stopped requesting tools before tests passed."
@@ -231,6 +230,7 @@ class AgentLoop:
                     # Increment iteration on write→run pair
                     if pending_write:
                         iteration += 1
+                        total_iterations += 1
                         pending_write = False
 
                 elif tc.name == "context7_docs":
@@ -288,7 +288,7 @@ class AgentLoop:
                         _original_test_content = None
 
         self.metrics.impl_duration_s = time.perf_counter() - impl_start
-        self.metrics.impl_iterations = iteration
+        self.metrics.impl_iterations = total_iterations
         self.metrics.success = False
         self.metrics.failure_reason = f"Max iterations ({self.max_iterations}) reached."
         return False, f"Max iterations ({self.max_iterations}) reached.\n{last_output}"

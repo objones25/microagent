@@ -272,9 +272,9 @@ class TestRunTask:
             MockLoop.return_value = instance
             with patch("eval.save_metrics"):
                 run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1",
-                         allow_test_revision=3, auto_approve_revision=True)
+                         allow_test_revision=True, auto_approve_revision=True)
         _, kwargs = MockLoop.call_args
-        assert kwargs["allow_test_revision"] == 3
+        assert kwargs["allow_test_revision"] is True
         assert kwargs["auto_approve_revision"] is True
 
 
@@ -422,7 +422,7 @@ class TestMain:
         monkeypatch.setattr(
             sys, "argv",
             ["eval.py", "--tasks", "1", "--max-iter", "1",
-             "--allow-test-revision", "2", "--auto-approve-revision"]
+             "--allow-test-revision", "--auto-approve-revision"]
         )
         fake_m = make_metrics(task_dir=str(tmp_path / "task-01"))
         with patch("eval.anthropic.Anthropic"):
@@ -430,5 +430,5 @@ class TestMain:
                 with patch("eval.run_judge_single", return_value="j"):
                     eval_mod.main()
         _, kwargs = mock_suite.call_args
-        assert kwargs["allow_test_revision"] == 2
+        assert kwargs["allow_test_revision"] is True
         assert kwargs["auto_approve_revision"] is True
