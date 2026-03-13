@@ -264,6 +264,19 @@ class TestRunTask:
                 result = run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1")
         assert "boom" in result.failure_reason
 
+    def test_run_task_passes_revision_flags(self, tmp_path):
+        client = MagicMock()
+        with patch("eval.AgentLoop") as MockLoop:
+            instance = MagicMock()
+            instance.metrics = make_metrics(task_dir=str(tmp_path / "task-01"))
+            MockLoop.return_value = instance
+            with patch("eval.save_metrics"):
+                run_task(client, "a task", tmp_path / "task-01", 5, MINIMAL_PROMPTS, "v1",
+                         allow_test_revision=3, auto_approve_revision=True)
+        _, kwargs = MockLoop.call_args
+        assert kwargs["allow_test_revision"] == 3
+        assert kwargs["auto_approve_revision"] is True
+
 
 # ---------------------------------------------------------------------------
 # run_suite
@@ -402,3 +415,20 @@ class TestMain:
         assert out_file.exists()
         data = json.loads(out_file.read_text())
         assert "summary" in data
+
+    def test_allow_test_revision_and_auto_approve_passed_to_suite(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["eval.py", "--tasks", "1", "--max-iter", "1",
+             "--allow-test-revision", "2", "--auto-approve-revision"]
+        )
+        fake_m = make_metrics(task_dir=str(tmp_path / "task-01"))
+        with patch("eval.anthropic.Anthropic"):
+            with patch("eval.run_suite", return_value=[fake_m]) as mock_suite:
+                with patch("eval.run_judge_single", return_value="j"):
+                    eval_mod.main()
+        _, kwargs = mock_suite.call_args
+        assert kwargs["allow_test_revision"] == 2
+        assert kwargs["auto_approve_revision"] is True

@@ -49,6 +49,7 @@ class AgentLoop:
         prompts_version: str = "v1",
         logger=None,
         allow_test_revision: int = 0,
+        auto_approve_revision: bool = False,
     ) -> None:
         self.client = client
         self.task_dir = task_dir
@@ -56,6 +57,7 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.prompts_version = prompts_version
         self.allow_test_revision = allow_test_revision
+        self.auto_approve_revision = auto_approve_revision
         self._prompts = prompts if prompts is not None else load_prompts(prompts_version)
         self._logger = logger if logger is not None else setup_logging(task_dir)
         self.metrics = RunMetrics(
@@ -294,6 +296,9 @@ class AgentLoop:
     def _prompt_test_revision_approval(
         self, reasoning: str, old: str, new: str
     ) -> bool:
+        if self.auto_approve_revision:
+            self._logger.info("  [test revision auto-approved]")
+            return True
         print("\n" + "=" * 60)
         print("AGENT PROPOSES TEST REVISION")
         print("=" * 60)

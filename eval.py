@@ -62,6 +62,8 @@ def run_task(
     max_iterations: int,
     prompts_dict: dict,
     prompts_version: str,
+    allow_test_revision: int = 0,
+    auto_approve_revision: bool = False,
 ) -> RunMetrics:
     task_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(task_dir)
@@ -73,6 +75,8 @@ def run_task(
         prompts=prompts_dict,
         prompts_version=prompts_version,
         logger=logger,
+        allow_test_revision=allow_test_revision,
+        auto_approve_revision=auto_approve_revision,
     )
 
     try:
@@ -281,13 +285,19 @@ def run_suite(
     prompts_dict: dict,
     prompts_version: str,
     label: str = "",
+    allow_test_revision: int = 0,
+    auto_approve_revision: bool = False,
 ) -> list[RunMetrics]:
     results = []
     prefix = f"[{label}] " if label else ""
     for i, task in enumerate(tasks, 1):
         task_dir = base_dir / f"task-{i:02d}"
         print(f"{prefix}[{i}/{len(tasks)}] {task}", flush=True)
-        metrics = run_task(client, task, task_dir, max_iterations, prompts_dict, prompts_version)
+        metrics = run_task(
+            client, task, task_dir, max_iterations, prompts_dict, prompts_version,
+            allow_test_revision=allow_test_revision,
+            auto_approve_revision=auto_approve_revision,
+        )
         status = "✓ PASS" if metrics.success else "✗ FAIL"
         print(f"  → {status} in {metrics.impl_iterations} iter(s), {metrics.total_duration_s:.1f}s\n")
         results.append(metrics)
@@ -318,6 +328,10 @@ def main() -> None:
                         help="After judging, call Claude to evaluate the quality of the judge's output")
     parser.add_argument("--eval-prompts", default="eval-v1", metavar="VERSION",
                         help="Eval prompts version (judge, optimizer, meta-judge) from prompts/<VERSION>.toml (default: eval-v1)")
+    parser.add_argument("--allow-test-revision", type=int, default=0, metavar="N",
+                        help="After N failing iterations per task, offer the agent a chance to revise tests (default: 0 = disabled)")
+    parser.add_argument("--auto-approve-revision", action="store_true",
+                        help="Automatically approve agent test revisions without prompting (use with --allow-test-revision)")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -347,12 +361,16 @@ def main() -> None:
         print(f"=== Running {args.prompts} ===")
         v1_dir = eval_dir / args.prompts
         v1_dir.mkdir()
-        v1_results = run_suite(client, tasks, v1_dir, args.max_iter, v1_prompts, args.prompts, label=args.prompts)
+        v1_results = run_suite(client, tasks, v1_dir, args.max_iter, v1_prompts, args.prompts,
+                               label=args.prompts, allow_test_revision=args.allow_test_revision,
+                               auto_approve_revision=args.auto_approve_revision)
 
         print(f"=== Running {args.compare} ===")
         v2_dir = eval_dir / args.compare
         v2_dir.mkdir()
-        v2_results = run_suite(client, tasks, v2_dir, args.max_iter, v2_prompts, args.compare, label=args.compare)
+        v2_results = run_suite(client, tasks, v2_dir, args.max_iter, v2_prompts, args.compare,
+                               label=args.compare, allow_test_revision=args.allow_test_revision,
+                               auto_approve_revision=args.auto_approve_revision)
 
         print("=" * 60)
         print(f"{args.prompts}: {summary_line(v1_results)}")
@@ -386,7 +404,9 @@ def main() -> None:
         print(f"Prompts: {args.prompts}")
         print(f"Max iterations per task: {args.max_iter}\n")
 
-        results = run_suite(client, tasks, eval_dir, args.max_iter, v1_prompts, args.prompts)
+        results = run_suite(client, tasks, eval_dir, args.max_iter, v1_prompts, args.prompts,
+                            allow_test_revision=args.allow_test_revision,
+                            auto_approve_revision=args.auto_approve_revision)
 
         passed = sum(1 for m in results if m.success)
         total_iter = sum(m.impl_iterations for m in results)

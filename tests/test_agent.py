@@ -496,9 +496,9 @@ class TestTestRevision:
                 mock_run.return_value = SimpleNamespace(
                     stdout="== 1 passed in 0.1s ==\n", stderr=""
                 )
-                with patch.object(AgentLoop, "_prompt_test_revision_approval", return_value=True):
-                    loop = _make_loop(tmp_task_dir, mock_client, {"allow_test_revision": 1})
-                    success, _ = loop.run_implementation_loop("task", initial)
+                loop = _make_loop(tmp_task_dir, mock_client,
+                                  {"allow_test_revision": 1, "auto_approve_revision": True})
+                success, _ = loop.run_implementation_loop("task", initial)
 
         assert success
         assert loop.metrics.test_revisions_attempted == 1
@@ -525,7 +525,7 @@ class TestTestRevision:
                 mock_run.return_value = SimpleNamespace(
                     stdout="== 1 failed in 0.1s ==\n", stderr=""
                 )
-                with patch.object(AgentLoop, "_prompt_test_revision_approval", return_value=False):
+                with patch("builtins.input", return_value="N"):
                     loop = _make_loop(tmp_task_dir, mock_client, {"allow_test_revision": 1})
                     success, _ = loop.run_implementation_loop("task", initial)
 
@@ -555,11 +555,12 @@ class TestTestRevision:
                 mock_run.return_value = SimpleNamespace(
                     stdout="== 1 failed in 0.1s ==\n", stderr=""
                 )
-                with patch.object(AgentLoop, "_prompt_test_revision_approval") as mock_approval:
-                    loop = _make_loop(tmp_task_dir, mock_client, {"allow_test_revision": 1})
-                    loop.run_implementation_loop("task", initial)
+                loop = _make_loop(tmp_task_dir, mock_client,
+                                  {"allow_test_revision": 1, "auto_approve_revision": True})
+                loop.run_implementation_loop("task", initial)
 
-        mock_approval.assert_not_called()
+        # auto_approve_revision=True but test file was NOT changed → no revision recorded
+        assert loop.metrics.test_revisions_approved == 0
         assert loop.metrics.test_revisions_attempted == 1
 
 
@@ -575,6 +576,16 @@ class TestPromptTestRevisionApproval:
             prompts=MINIMAL_PROMPTS,
             logger=MagicMock(),
         )
+
+    def test_auto_approve(self, tmp_task_dir, mock_client):
+        loop = AgentLoop(
+            client=mock_client,
+            task_dir=tmp_task_dir,
+            prompts=MINIMAL_PROMPTS,
+            logger=MagicMock(),
+            auto_approve_revision=True,
+        )
+        assert loop._prompt_test_revision_approval("reasoning", "old", "new") is True
 
     def test_approved_y(self, tmp_task_dir, mock_client):
         loop = self._make_loop(tmp_task_dir, mock_client)
