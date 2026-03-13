@@ -37,26 +37,29 @@ CONTEXT7_API_KEY=...           # optional — needed for library docs tool
 ```bash
 uv run python microagent.py "Write a function that reverses a string"
 uv run python microagent.py "Write a Fibonacci function" --task-dir ./fib-task
-uv run python microagent.py "Write a reverse string function" --prompts v1
-uv run python microagent.py "Write RLE encode/decode" --allow-test-revision 3
+uv run python microagent.py "Write a reverse string function" --prompts v2.2
+uv run python microagent.py "Write RLE encode/decode" --allow-test-revision
 ```
 
 **Arguments:**
 
-| Flag                    | Default                 | Description                                                               |
-| ----------------------- | ----------------------- | ------------------------------------------------------------------------- |
-| `prompt`                | _(required)_            | Task description                                                          |
-| `--task-dir`            | `task-YYYYMMDD-HHMMSS/` | Directory for task files                                                  |
-| `--model`               | `claude-sonnet-4-6`     | Claude model to use                                                       |
-| `--max-iterations`      | `10`                    | Max write→run cycles before giving up                                     |
-| `--prompts`             | `v1`                    | Agent prompts version (`prompts/<version>.toml`)                          |
-| `--allow-test-revision` | `0` (disabled)          | After N failing iterations, offer the agent a chance to revise the tests  |
+| Flag                    | Default                 | Description                                                                       |
+| ----------------------- | ----------------------- | --------------------------------------------------------------------------------- |
+| `prompt`                | _(required)_            | Task description                                                                  |
+| `--task-dir`            | `task-YYYYMMDD-HHMMSS/` | Directory for task files                                                          |
+| `--model`               | `claude-sonnet-4-6`     | Claude model to use                                                               |
+| `--max-iterations`      | `10`                    | Max write→run cycles before giving up                                             |
+| `--prompts`             | `v1`                    | Agent prompts version (`prompts/<version>.toml`)                                  |
+| `--allow-test-revision` | off                     | When the agent stops without passing, offer it a chance to revise the tests       |
+| `--auto-approve-revision` | off                   | Automatically approve test revisions without prompting (use with `--allow-test-revision`) |
 
 After generating tests, the agent pauses and shows `solution_test.py` before starting implementation. Press Enter to continue or Ctrl+C to abort.
 
 #### Test revision
 
-When `--allow-test-revision N` is set, after N consecutive failing iterations the agent is shown the test file and asked whether it believes the tests contain an error. If it writes a revised `solution_test.py`, **the terminal shows a full diff and prompts for explicit approval** before the new tests take effect. Denied revisions restore the original file. The iteration counter resets to 0 on approval.
+When `--allow-test-revision` is set, if the agent stops without passing all tests, it is shown the test file and asked whether the tests contain a factual error. The agent must use the `calculator` tool to verify any expected values before rewriting — it cannot modify tests without proof. If it writes a revised `solution_test.py`, **the terminal shows a full diff and prompts for explicit approval** before the new tests take effect. Denied revisions restore the original file. The iteration counter resets on approval.
+
+Add `--auto-approve-revision` to skip the interactive prompt (useful for eval runs).
 
 **Task directory output:**
 
@@ -84,18 +87,19 @@ Console output shows a structured log of every tool call:
 ### Evaluation harness
 
 ```bash
-uv run python eval.py                                  # run v1 prompts on all 10 tasks
-uv run python eval.py --tasks 3                        # run first 3 tasks
-uv run python eval.py --prompts v2                     # use a different agent prompt version
-uv run python eval.py --compare v2                     # A/B test v1 vs v2
-uv run python eval.py --max-iter 5                     # limit iterations per task
-uv run python eval.py --optimize                       # save an improved prompt TOML after judging
-uv run python eval.py --meta-judge                     # also evaluate the judge's output quality
-uv run python eval.py --eval-prompts eval-v2           # use a different judge/optimizer prompt version
-uv run python eval.py --tasks-file v2                  # use a different task list
+uv run python eval.py                                                    # run v1 prompts on all tasks
+uv run python eval.py --tasks 3                                          # run first 3 tasks
+uv run python eval.py --prompts v2.2                                     # use a different agent prompt version
+uv run python eval.py --compare v2.2                                     # A/B test v1 vs v2.2
+uv run python eval.py --tasks-file v2                                    # use the harder task list
+uv run python eval.py --max-iter 5                                       # limit iterations per task
+uv run python eval.py --optimize                                         # save an improved prompt TOML after judging
+uv run python eval.py --meta-judge                                       # also evaluate the judge's output quality
+uv run python eval.py --eval-prompts eval-v1.1                           # use a different judge/optimizer prompt version
+uv run python eval.py --allow-test-revision --auto-approve-revision      # enable non-interactive test revision
 ```
 
-The eval harness runs a suite of 10 harder coding tasks (algorithms, data structures, parsing, etc.), collects `RunMetrics` for each, then calls a Claude judge for analysis and prompt improvement suggestions.
+The eval harness runs a suite of coding tasks, collects `RunMetrics` for each, then calls a Claude judge for analysis and prompt improvement suggestions.
 
 **`--optimize`** — After the judge runs, calls Claude with a prompt-engineer system prompt to produce an improved agent TOML. Validates it parses as TOML, then saves it to `prompts/YYYYMMDD-HHMMSS.toml`. These timestamped files are gitignored by default.
 
@@ -104,7 +108,11 @@ Optimized prompts saved → prompts/20260313-143022.toml
 Test with: uv run python eval.py --prompts 20260313-143022
 ```
 
-**`--meta-judge`** — After the primary judge runs, calls a second Claude instance to evaluate the judge's own output quality: coverage of all template sections, specificity of citations, actionability of prompt improvement suggestions (quoting exact text vs. vague direction), calibration against actual pass rates, and structural weaknesses in the judge prompts themselves. Saves `meta_judgment.md` alongside `judgment.md`.
+**`--allow-test-revision`** — When the agent stops without passing tests, it is offered one chance to revise `solution_test.py`. The agent must verify any incorrect expected values with the `calculator` tool before rewriting. Requires `--auto-approve-revision` for non-interactive (eval) use.
+
+**`--auto-approve-revision`** — Automatically approve any test revision the agent proposes. Only meaningful with `--allow-test-revision`. Safe to use in automated/CI contexts.
+
+**`--meta-judge`** — After the primary judge runs, calls a second Claude instance to evaluate the judge's own output quality: coverage of all template sections, specificity of citations, actionability of prompt improvement suggestions, calibration against actual pass rates, and structural weaknesses in the judge prompts. Saves `meta_judgment.md` alongside `judgment.md`.
 
 **Eval output:**
 
@@ -149,10 +157,15 @@ microagent/
 ├── microagent.py     # CLI entry point
 ├── tools.py          # Tool schemas + implementations (read, write, pytest, docs, search, calc)
 ├── evals/
-│   └── tasks-v1.txt  # Eval task list (one task per line, versioned)
+│   ├── tasks-v1.txt  # Standard eval task list (10 algorithm/DS tasks)
+│   └── tasks-v2.txt  # Harder eval task list (Trie, LFU, Dijkstra, JSON parser, etc.)
 ├── prompts/
-│   ├── v1.toml       # Agent prompt templates (test generation + implementation + test revision)
-│   └── eval-v1.toml  # Eval prompt templates (judge, A/B judge, optimizer, meta-judge)
+│   ├── v1.toml       # Agent prompts v1 (baseline)
+│   ├── v2.toml       # Agent prompts v2 (improved test quality rules)
+│   ├── v2.1.toml     # Agent prompts v2.1 (derivation comments, anti-pattern list, algorithm verification)
+│   ├── v2.2.toml     # Agent prompts v2.2 (strengthened test revision prompt)
+│   ├── eval-v1.toml  # Eval prompts v1 (judge, A/B judge, optimizer, meta-judge)
+│   └── eval-v1.1.toml # Eval prompts v1.1 (verification constraints, placeholder guards, implementation depth)
 └── tests/
     ├── conftest.py   # Shared fixtures and mock helpers
     ├── test_agent.py
@@ -164,15 +177,15 @@ microagent/
 
 ## Prompts
 
-### Agent prompts (`prompts/v1.toml`)
+### Agent prompts
 
 Loaded at runtime using Python's stdlib `tomllib`. To iterate:
 
 ```bash
-cp prompts/v1.toml prompts/v2.toml
-# edit prompts/v2.toml
-uv run python microagent.py "your task" --prompts v2
-uv run python eval.py --compare v2     # A/B test v1 vs v2
+cp prompts/v2.2.toml prompts/v3.toml
+# edit prompts/v3.toml
+uv run python microagent.py "your task" --prompts v3
+uv run python eval.py --compare v3     # A/B test v2.2 vs v3
 ```
 
 | Section               | Key        | Used as                                                                  |
@@ -182,35 +195,56 @@ uv run python eval.py --compare v2     # A/B test v1 vs v2
 | `[implementation]`    | `system`   | System prompt for Phase 2                                                |
 | `[implementation]`    | `user`     | User message — `{user_prompt}`, `{test_content}`, `{prompt_md_section}` |
 | `[prompt_md_section]` | `template` | Injected when `.prompt.md` exists — `{prompt_md}`                       |
-| `[test_revision]`     | `user`     | Injected after N failures — `{n}` (iteration count)                     |
+| `[test_revision]`     | `user`     | Injected when agent stops without passing (if `--allow-test-revision`)   |
 
-### Eval prompts (`prompts/eval-v1.toml`)
+**Prompt version history:**
 
-Controls the judge, A/B judge, prompt optimizer, and meta-judge. Can be versioned and iterated independently of agent prompts:
+| Version | Key changes |
+| ------- | ----------- |
+| `v1`    | Baseline |
+| `v2`    | `from solution import MyClass` rule; forbid `or` in asserts; round-trip testing for encodings; conservative timing tests |
+| `v2.1`  | Derivation comments for numeric assertions; concrete always-True anti-pattern list; algorithm variant verification step; function name consistency |
+| `v2.2`  | Strengthened `[test_revision]`: requires calculator proof before rewriting tests; defaults to fixing implementation |
+
+### Eval prompts
+
+Controls the judge, A/B judge, prompt optimizer, and meta-judge. Versioned independently of agent prompts:
 
 ```bash
-cp prompts/eval-v1.toml prompts/eval-v2.toml
+cp prompts/eval-v1.1.toml prompts/eval-v2.toml
 # edit prompts/eval-v2.toml
 uv run python eval.py --eval-prompts eval-v2
 ```
 
-| Section              | Keys              | Used as                                              |
-| -------------------- | ----------------- | ---------------------------------------------------- |
-| `[judge]`            | `system`          | System prompt for the judge call                     |
-| `[judge_single]`     | `template`        | User message for single-version eval                 |
-| `[judge_ab]`         | `template`        | User message for A/B comparison                      |
-| `[prompt_optimizer]` | `system`          | System prompt for `--optimize` prompt generation     |
-| `[meta_judge]`       | `system`,`template` | System + user prompts for `--meta-judge` call      |
+| Section              | Keys                | Used as                                              |
+| -------------------- | ------------------- | ---------------------------------------------------- |
+| `[judge]`            | `system`            | System prompt for the judge call                     |
+| `[judge_single]`     | `template`          | User message for single-version eval                 |
+| `[judge_ab]`         | `template`          | User message for A/B comparison                      |
+| `[prompt_optimizer]` | `system`            | System prompt for `--optimize` prompt generation     |
+| `[meta_judge]`       | `system`, `template` | System + user prompts for `--meta-judge` call       |
 
-### Task lists (`evals/tasks-v1.txt`)
+**Eval prompt version history:**
+
+| Version    | Key changes |
+| ---------- | ----------- |
+| `eval-v1`  | Baseline |
+| `eval-v1.1` | Verification constraints (no fabricating text/tools); placeholder guards (EVALUATION BLOCKED if vars unfilled); implementation depth requirements; data reconciliation in Section 1; new system-level design section; REPLACEMENT/NEW ADDITION labeling for prompt improvements |
+
+### Task lists
 
 One task per line. To add a new task set:
 
 ```bash
-cp evals/tasks-v1.txt evals/tasks-v2.txt
-# edit evals/tasks-v2.txt
-uv run python eval.py --tasks-file v2
+cp evals/tasks-v1.txt evals/tasks-v3.txt
+# edit evals/tasks-v3.txt
+uv run python eval.py --tasks-file v3
 ```
+
+| File          | Contents |
+| ------------- | -------- |
+| `tasks-v1.txt` | LCS, knapsack, parenthesizations, LRUCache, tree serialization, RLE, anagram grouping, TokenBucket, LIS, expression evaluator |
+| `tasks-v2.txt` | Trie, streaming median, Dijkstra, LFU cache, word break II, JSON parser, topological sort, min-heap from scratch, diff/edit distance, consistent hash ring |
 
 ---
 
@@ -242,7 +276,7 @@ Each run produces `metrics.json` in the task directory:
 {
   "task_prompt": "Write a function that reverses a string",
   "task_dir": "task-20240613-120000",
-  "prompts_version": "v1",
+  "prompts_version": "v2.2",
   "model": "claude-sonnet-4-6",
   "started_at": "2024-06-13T12:00:00+00:00",
   "test_gen_duration_s": 3.2,
@@ -263,6 +297,8 @@ Each run produces `metrics.json` in the task directory:
   "total_tool_calls": 5
 }
 ```
+
+`impl_iterations` counts the total number of write→run cycles across the entire run, including iterations before any test revision. It never resets.
 
 ---
 
