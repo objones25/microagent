@@ -5,6 +5,7 @@ microagent — test-first AI coding agent
 Usage:
     python microagent.py "Write a function that reverses a list"
     python microagent.py "Write a Fibonacci function" --task-dir ./fib-task
+    python microagent.py "Write a reverse string function" --prompts v1
 """
 
 import argparse
@@ -22,6 +23,7 @@ load_dotenv(Path(__file__).parent / ".env")
 import anthropic
 
 from agent import AgentLoop
+from logger import setup_logging
 
 
 def main() -> None:
@@ -45,6 +47,19 @@ def main() -> None:
         default=10,
         help="Max implementation attempts before giving up (default: 10)",
     )
+    parser.add_argument(
+        "--prompts",
+        default="v1",
+        metavar="VERSION",
+        help="Prompts version to load from prompts/<VERSION>.toml (default: v1)",
+    )
+    parser.add_argument(
+        "--allow-test-revision",
+        type=int,
+        default=0,
+        metavar="N",
+        help="After N failing iterations, offer the agent a chance to revise solution_test.py (requires user approval). 0 = disabled (default: 0)",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -60,14 +75,15 @@ def main() -> None:
         task_dir = Path(f"task-{timestamp}")
 
     task_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Task directory: {task_dir.resolve()}")
+    logger = setup_logging(task_dir)
+    logger.info(f"Task directory: {task_dir.resolve()}")
 
     # Copy .prompt.md from cwd if present
     prompt_md_src = Path(".prompt.md")
     if prompt_md_src.exists():
         dest = task_dir / "solution.prompt.md"
         shutil.copy(prompt_md_src, dest)
-        print(f"Copied .prompt.md → {dest}")
+        logger.info(f"Copied .prompt.md → {dest}")
 
     client = anthropic.Anthropic(api_key=api_key)
     loop = AgentLoop(
@@ -75,6 +91,9 @@ def main() -> None:
         task_dir=task_dir,
         model=args.model,
         max_iterations=args.max_iterations,
+        prompts_version=args.prompts,
+        logger=logger,
+        allow_test_revision=args.allow_test_revision,
     )
 
     try:

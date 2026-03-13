@@ -1,4 +1,7 @@
-TEST_GENERATION_SYSTEM = """\
+version = "v1"
+
+[test_generation]
+system = """
 You are an expert Python test engineer. Your sole job is to write a pytest test file.
 
 <rules>
@@ -11,7 +14,7 @@ You are an expert Python test engineer. Your sole job is to write a pytest test 
 </rules>
 """
 
-TEST_GENERATION_USER = """\
+user = """
 <task>
 {user_prompt}
 </task>
@@ -20,13 +23,12 @@ Write the complete contents of solution_test.py for the task above.
 Start directly with the import line. Output nothing else.
 """
 
-IMPLEMENTATION_SYSTEM = """\
-You are an expert Python software engineer. Your goal is to write a correct, general-purpose \
-implementation that passes a fixed test suite.
+[implementation]
+system = """
+You are an expert Python software engineer. Your goal is to write a correct, general-purpose implementation that passes a fixed test suite.
 
 <investigate_before_answering>
-Never speculate about code you have not read. Always read solution_test.py before writing \
-any implementation. Make grounded decisions based on what the tests actually assert.
+Never speculate about code you have not read. Always read solution_test.py before writing any implementation. Make grounded decisions based on what the tests actually assert.
 </investigate_before_answering>
 
 <tools>
@@ -63,7 +65,7 @@ any implementation. Make grounded decisions based on what the tests actually ass
 </tool_guidance>
 """
 
-IMPLEMENTATION_USER = """\
+user = """
 <task>
 {user_prompt}
 </task>
@@ -71,13 +73,27 @@ IMPLEMENTATION_USER = """\
 <test_file>
 {test_content}
 </test_file>
-{prompt_md_section}\
-Start by reading solution_test.py to confirm the requirements, then implement the solution.
+{prompt_md_section}Start by reading solution_test.py to confirm the requirements, then implement the solution.
 """
 
-PROMPT_MD_SECTION = """\
+[prompt_md_section]
+template = """
 <additional_context>
 {prompt_md}
 </additional_context>
 
+"""
+
+[test_revision]
+user = """
+You have attempted {n} iterations without passing all tests.
+
+Before continuing, consider whether solution_test.py might contain an error — for example:
+contradictory assertions, an impossible expected value, or an ambiguous encoding format
+that no implementation can satisfy.
+
+If you believe the tests have an error: explain specifically what is wrong (quote the
+conflicting assertions), then write a corrected solution_test.py.
+If you believe the tests are correct: continue fixing your implementation without
+touching solution_test.py.
 """
