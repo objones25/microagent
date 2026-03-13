@@ -144,18 +144,43 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "run_python",
+        "description": (
+            "Execute a small Python snippet and return its output (stdout + stderr). "
+            "Use this to verify algorithm logic, test edge cases, or compute values that are "
+            "too complex for the calculator (e.g. list comprehensions, conditionals, imports). "
+            "Can import solution to test the current implementation on specific inputs. "
+            "Keep snippets short and focused; for full test runs use run_subprocess instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Python code to execute. Use print() to produce output. "
+                        "Example: 'from solution import f; print(f([1,2,3]))'"
+                    ),
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "calculator",
         "description": (
             "Evaluate a safe mathematical expression. Supports: +, -, *, /, **, %, //, "
-            "abs(), round(), min(), max(), sum(), math.* functions. "
-            "Use for precise arithmetic instead of estimating."
+            "abs(), round(), min(), max(), sum(), len(), math.* functions. "
+            "String literals are supported so len(\"hello\") and len(\"a\") + len(\"bc\") work. "
+            "Use for precise arithmetic instead of estimating. "
+            "For more complex verification (loops, conditionals, imports), use run_python instead."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "expression": {
                     "type": "string",
-                    "description": "Math expression to evaluate, e.g. '2 ** 32' or 'math.sqrt(144)'",
+                    "description": "Math expression to evaluate, e.g. '2 ** 32', 'math.sqrt(144)', or 'len(\"hello\") + 1'",
                 },
             },
             "required": ["expression"],
@@ -286,6 +311,22 @@ def tool_firecrawl_search(inputs: dict) -> str:
 
 
 # ------------------------------------------------------------------
+# Python snippet runner
+# ------------------------------------------------------------------
+
+def tool_run_python(inputs: dict, task_dir: Path) -> str:
+    result = subprocess.run(
+        ["python", "-c", inputs["code"]],
+        cwd=str(task_dir),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    output = (result.stdout + result.stderr).strip()
+    return output or "(no output)"
+
+
+# ------------------------------------------------------------------
 # Calculator
 # ------------------------------------------------------------------
 
@@ -302,9 +343,9 @@ _SAFE_OPS = {
 }
 
 
-def _safe_eval(node: ast.expr) -> float | int:
+def _safe_eval(node: ast.expr) -> float | int | str:
     match node:
-        case ast.Constant(value=v) if isinstance(v, int | float):
+        case ast.Constant(value=v) if isinstance(v, (int, float, str)):
             return v
         case ast.BinOp(left=l, op=op, right=r):
             fn = _SAFE_OPS.get(type(op))
@@ -361,6 +402,8 @@ def dispatch_tool(name: str, inputs: dict, task_dir: Path) -> str:
             return tool_firecrawl_scrape(inputs)
         case "firecrawl_search":
             return tool_firecrawl_search(inputs)
+        case "run_python":
+            return tool_run_python(inputs, task_dir)
         case "calculator":
             return tool_calculator(inputs)
         case _:
