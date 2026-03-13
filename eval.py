@@ -7,7 +7,7 @@ then passes everything to a Claude judge for analysis and prompt improvement sug
 
 Usage:
     python eval.py                       # run V2 prompts on all tasks
-    python eval.py --ab-test             # run V1 vs V2 on all tasks and compare
+    python eval.py --baseline old_prompts.py  # A/B test baseline file vs current prompts.py
     python eval.py --tasks 5             # run first N tasks only
     python eval.py --max-iter 5          # limit implementation iterations per task
     python eval.py --out results.json    # save raw results to file
@@ -358,7 +358,8 @@ def run_suite(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate microagent on a suite of harder coding tasks")
-    parser.add_argument("--ab-test", action="store_true", help="Run V1 vs V2 prompts and compare")
+    parser.add_argument("--baseline", default=None, metavar="PROMPTS_FILE",
+                        help="Path to a second prompts .py file to A/B test against current prompts.py")
     parser.add_argument("--tasks", type=int, default=len(TASKS), help="Number of tasks to run (default: all)")
     parser.add_argument("--max-iter", type=int, default=5, help="Max implementation iterations per task (default: 5)")
     parser.add_argument("--out", default=None, help="Save raw results JSON to this file")
@@ -376,40 +377,45 @@ def main() -> None:
     eval_dir = Path(f"eval-{timestamp}")
     eval_dir.mkdir()
 
-    import prompts as v2_prompts
-    import prompts_v1 as v1_prompts
+    import prompts as current_prompts
 
-    if args.ab_test:
+    if args.baseline:
+        import importlib.util, sys as _sys
+        spec = importlib.util.spec_from_file_location("_baseline_prompts", args.baseline)
+        baseline_prompts = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(baseline_prompts)
+
         print(f"A/B test: {len(tasks)} tasks × 2 prompt versions → {eval_dir}/")
+        print(f"Baseline: {args.baseline}")
         print(f"Max iterations per task: {args.max_iter}\n")
 
-        print("=== Running V1 (baseline) ===")
-        v1_dir = eval_dir / "v1"
-        v1_dir.mkdir()
-        v1_results = run_suite(client, tasks, v1_dir, args.max_iter, v1_prompts, label="V1")
+        print("=== Running baseline ===")
+        baseline_dir = eval_dir / "baseline"
+        baseline_dir.mkdir()
+        baseline_results = run_suite(client, tasks, baseline_dir, args.max_iter, baseline_prompts, label="baseline")
 
-        print("=== Running V2 (improved) ===")
-        v2_dir = eval_dir / "v2"
-        v2_dir.mkdir()
-        v2_results = run_suite(client, tasks, v2_dir, args.max_iter, v2_prompts, label="V2")
+        print("=== Running current (prompts.py) ===")
+        current_dir = eval_dir / "current"
+        current_dir.mkdir()
+        current_results = run_suite(client, tasks, current_dir, args.max_iter, current_prompts, label="current")
 
         print("=" * 60)
-        print(f"V1: {summary_line(v1_results)}")
-        print(f"V2: {summary_line(v2_results)}")
+        print(f"baseline: {summary_line(baseline_results)}")
+        print(f"current:  {summary_line(current_results)}")
         print("=" * 60)
 
-        all_results = {"v1": v1_results, "v2": v2_results}
+        all_results = {"baseline": baseline_results, "current": current_results}
         out_path = Path(args.out) if args.out else eval_dir / "results.json"
         out_path.write_text(json.dumps(all_results, indent=2))
         print(f"\nRaw results saved to: {out_path}")
 
-        judgment = run_judge_ab(client, v1_results, v2_results, args.max_iter, v1_prompts, v2_prompts)
+        judgment = run_judge_ab(client, baseline_results, current_results, args.max_iter, baseline_prompts, current_prompts)
 
     else:
         print(f"Running {len(tasks)} tasks → {eval_dir}/")
         print(f"Max iterations per task: {args.max_iter}\n")
 
-        results = run_suite(client, tasks, eval_dir, args.max_iter, v2_prompts)
+        results = run_suite(client, tasks, eval_dir, args.max_iter, current_prompts)
 
         passed = sum(1 for r in results if r["passed"])
         total_iter = sum(r["iterations"] for r in results)
