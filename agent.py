@@ -22,7 +22,7 @@ _RETRYABLE = (
 
 
 def load_prompts(
-    version: str = "v1",
+    version: str = "v2.4",
     conn: Optional[sqlite3.Connection] = None,
     path: Optional[Path] = None,
 ) -> dict:
@@ -81,7 +81,7 @@ class AgentLoop:
         max_iterations: int = 10,
         max_retries: int = 3,
         prompts: Optional[dict] = None,
-        prompts_version: str = "v1",
+        prompts_version: str = "v2.4",
         logger=None,
         allow_test_revision: bool = False,
         auto_approve_revision: bool = False,
