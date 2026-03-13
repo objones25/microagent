@@ -9,3 +9,15 @@ dependencies = [
     "pytest>=9.0.2",
     "python-dotenv>=1.2.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=agent --cov=eval --cov=microagent --cov-report=term-missing --cov-fail-under=98"
+
+[tool.coverage.run]
+omit = ["tests/*", ".venv/*"]
