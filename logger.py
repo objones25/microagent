@@ -24,6 +24,8 @@ class RunMetrics:
     # Phase 2 — implementation loop
     impl_duration_s: float = 0.0
     impl_llm_calls: int = 0
+    impl_input_tokens: int = 0
+    impl_output_tokens: int = 0
     impl_iterations: int = 0
     impl_pytest_runs: int = 0
     impl_write_count: int = 0
@@ -65,6 +67,8 @@ class RunMetrics:
             "test_gen_output_tokens": self.test_gen_output_tokens,
             "impl_duration_s": round(self.impl_duration_s, 3),
             "impl_llm_calls": self.impl_llm_calls,
+            "impl_input_tokens": self.impl_input_tokens,
+            "impl_output_tokens": self.impl_output_tokens,
             "impl_iterations": self.impl_iterations,
             "impl_pytest_runs": self.impl_pytest_runs,
             "impl_write_count": self.impl_write_count,

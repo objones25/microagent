@@ -205,6 +205,8 @@ class AgentLoop:
                 tools=TOOL_SCHEMAS,
                 messages=messages,
             )
+            self.metrics.impl_input_tokens += response.usage.input_tokens
+            self.metrics.impl_output_tokens += response.usage.output_tokens
 
             tool_calls = [b for b in response.content if b.type == "tool_use"]
 
@@ -438,11 +440,23 @@ class AgentLoop:
 
         # Save metrics
         save_metrics(self.metrics, self.task_dir, conn=self._db_conn)
+        total_in = self.metrics.test_gen_input_tokens + self.metrics.impl_input_tokens
+        total_out = self.metrics.test_gen_output_tokens + self.metrics.impl_output_tokens
+        self._logger.info(
+            f"Tokens — test gen: {self.metrics.test_gen_input_tokens}in/"
+            f"{self.metrics.test_gen_output_tokens}out  "
+            f"impl: {self.metrics.impl_input_tokens}in/"
+            f"{self.metrics.impl_output_tokens}out  "
+            f"total: {total_in}in/{total_out}out"
+        )
+        if self.metrics.api_retries:
+            self._logger.info(f"API retries: {self.metrics.api_retries}")
         self._logger.debug(
             f"Metrics: {self.metrics.impl_iterations} iterations, "
             f"{self.metrics.impl_llm_calls} LLM calls, "
             f"{self.metrics.total_tool_calls} tool calls, "
-            f"{self.metrics.total_duration_s:.1f}s total"
+            f"{self.metrics.total_duration_s:.1f}s total, "
+            f"failure_category={self.metrics.failure_category!r}"
         )
 
         print("\n" + "=" * 60)

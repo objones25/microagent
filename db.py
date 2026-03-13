@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS task_results (
     test_gen_output_tokens INTEGER,
     impl_duration_s REAL,
     impl_llm_calls INTEGER,
+    impl_input_tokens INTEGER,
+    impl_output_tokens INTEGER,
     impl_iterations INTEGER,
     impl_pytest_runs INTEGER,
     impl_write_count INTEGER,
@@ -170,6 +172,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("test_coverage_pct", "REAL"),
         ("api_retries", "INTEGER"),
         ("failure_category", "TEXT"),
+        ("impl_input_tokens", "INTEGER"),
+        ("impl_output_tokens", "INTEGER"),
     ]:
         try:
             conn.execute(f"ALTER TABLE task_results ADD COLUMN {col} {typedef}")
@@ -391,12 +395,13 @@ def save_task_result(
         """INSERT INTO task_results
            (eval_run_id, task_id, task_prompt, task_dir, prompts_version, model,
             started_at, test_gen_duration_s, test_gen_input_tokens, test_gen_output_tokens,
-            impl_duration_s, impl_llm_calls, impl_iterations, impl_pytest_runs,
+            impl_duration_s, impl_llm_calls, impl_input_tokens, impl_output_tokens,
+            impl_iterations, impl_pytest_runs,
             impl_write_count, tool_calls, test_revisions_attempted,
             test_revisions_approved, test_revision_reasoning,
             test_coverage_pct, success, failure_reason, failure_category, api_retries,
             total_duration_s, total_tool_calls)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             eval_run_id,
             task_id,
@@ -410,6 +415,8 @@ def save_task_result(
             metrics.test_gen_output_tokens,
             round(metrics.impl_duration_s, 3),
             metrics.impl_llm_calls,
+            metrics.impl_input_tokens,
+            metrics.impl_output_tokens,
             metrics.impl_iterations,
             metrics.impl_pytest_runs,
             metrics.impl_write_count,
