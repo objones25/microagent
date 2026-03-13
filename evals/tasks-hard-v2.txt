@@ -1,0 +1,63 @@
+# hard
+
+# Systems & Runtime Internals
+Implement a mark-and-sweep garbage collector that tracks object references in a simulated heap, handles cycles, and compacts live objects.
+Implement a coroutine scheduler using Python generators that supports yield, send, and throw, with cooperative task switching and a run-loop.
+Implement a memory allocator with malloc(size) and free(ptr) over a fixed byte array, using a free-list with first-fit placement and coalescing of adjacent free blocks.
+Implement a write-ahead log (WAL) with begin(), commit(), rollback(), and crash_recover() that replays or discards partial transactions from a log file.
+Implement a copy-on-write B-tree that supports insert, delete, search, and range queries, where each mutation produces a new root without modifying prior versions.
+Implement a simple bytecode virtual machine with a stack, registers, support for LOAD, STORE, ADD, SUB, MUL, DIV, JMP, JZ, CALL, RET instructions, and a call stack for nested function calls.
+
+# Concurrency & Thread Safety
+Implement a thread-safe bounded blocking queue with put() and get() that block when full/empty, using only threading.Condition (no Queue module).
+Implement a readers-writer lock with reader preference: multiple concurrent readers are allowed, but writers get exclusive access; no starvation of writers after a configurable wait threshold.
+Implement a work-stealing thread pool where idle workers steal tasks from the back of other workers' deques; support submit(fn) and shutdown().
+Implement a barrier synchronization primitive where n threads block at wait() until all n have arrived, then all proceed; reusable across phases.
+Implement a rate-limited async task queue using asyncio that processes at most k tasks per second across any sliding 1-second window.
+
+# Parsers, Compilers & Interpreters
+Implement a recursive-descent parser and evaluator for a small expression language supporting variables, let bindings, if/else, lambdas, and closures (e.g., let f = lambda x: x + 1 in f(5)).
+Implement a full regex engine supporting '.', '*', '+', '?', '|', grouping with '()', character classes '[]', anchors '^' and '$', and escape sequences via NFA simulation (no re module).
+Implement a Pratt parser for arithmetic expressions with correct operator precedence, associativity, and prefix/postfix operators.
+Implement a CSV parser that fully conforms to RFC 4180, including quoted fields with embedded commas, newlines, and escaped double-quotes.
+Implement a streaming JSON tokenizer and parser that processes input character-by-character, handles all JSON types, and raises precise errors with line/column positions.
+Implement a simple template engine that supports {{ variable }}, {% for x in list %} ... {% endfor %}, and {% if cond %} ... {% endif %} blocks with proper scoping and nesting.
+
+# Advanced Algorithms
+Implement the Li Chao tree for the dynamic convex hull trick: supports add_line(m, b) and query_min(x) in O(log n) for arbitrary x values.
+Implement centroid decomposition of a tree and use it to answer offline path queries: given Q queries (u, v, k), count nodes on the u-to-v path with value <= k.
+Implement the small-to-large merging technique on a forest of sets to compute, for each node, the most frequent value in its subtree in O(n log^2 n) total.
+Implement the offline dynamic connectivity algorithm using a segment tree on time: given edge insertions and deletions with timestamps, answer connectivity queries at specific times using union-find with rollback.
+Implement divide-and-conquer optimization for DP: given a recurrence dp[i][j] = min over k<=j of (dp[i-1][k] + cost(k,j)) where cost satisfies the quadrangle inequality, solve it in O(kn log n) instead of O(kn^2).
+Implement the sqrt-decomposition-based Mo's algorithm for offline range queries on a sequence, with support for add/remove element operations and a custom query accumulator function.
+
+# Numerical & Mathematical
+Implement the Fast Fourier Transform (FFT) from scratch using complex arithmetic, and use it to multiply two large polynomials represented as coefficient lists.
+Implement the Number Theoretic Transform (NTT) for polynomial multiplication modulo a prime p, with modular arithmetic throughout.
+Implement a Fraction class with exact rational arithmetic (add, sub, mul, div, pow, compare) that always reduces to lowest terms, supporting arbitrarily large numerators and denominators.
+Implement the simplex algorithm for linear programming: maximize c*x subject to Ax <= b, x >= 0; handle unbounded and infeasible cases.
+Implement Berlekamp-Massey to find the shortest linear recurrence that generates a given integer sequence, then use it to compute the nth term in O(k log k log n) via Kitamasa's method.
+Implement a big-integer library from scratch (no Python int beyond 64-bit words) with add, subtract, multiply (Karatsuba), divide (long division), and modular exponentiation.
+
+# Geometry
+Implement Fortune's sweep-line algorithm for computing the Voronoi diagram of a set of 2D points using a beach line of parabolas.
+Implement a dynamic convex hull that supports insert(point), delete(point), and query_max(direction) (farthest point in a given direction) in O(log^2 n) per operation.
+Implement a half-plane intersection algorithm that computes the feasible region of a set of linear inequalities as a convex polygon, or detects infeasibility.
+Implement the rotating calipers technique to find the diameter, minimum width, and minimum bounding rectangle of a convex polygon in O(n).
+Implement a sweep-line algorithm for the Bentley-Ottmann line segment intersection problem: given n segments, report all k intersection points in O((n + k) log n) time.
+
+# Protocol & Network Simulation
+Implement an HTTP/1.1 request and response parser that handles chunked transfer encoding, keep-alive, content-length, and header folding.
+Implement a sliding-window TCP-like reliable protocol simulator: sender and receiver exchange packets over a lossy channel (configurable drop probability); implement retransmission, duplicate ACK handling, and flow control.
+Implement a RESP (Redis Serialization Protocol) parser and a mini Redis server supporting GET, SET, DEL, EXPIRE, TTL, LPUSH, LPOP, and LRANGE over a simulated socket interface.
+Implement a publish-subscribe message broker with topics, subscriber queues, at-least-once delivery, and a configurable retention window; support concurrent publishers and subscribers.
+
+# Database & Storage
+Implement an LSM-tree with an in-memory memtable, immutable SSTables on disk, a bloom filter per SSTable, and compaction that merges the two smallest SSTables when there are more than k.
+Implement MVCC (Multi-Version Concurrency Control) for a key-value store: support begin_txn(), read(key), write(key, val), commit(), and rollback() with snapshot isolation and write-write conflict detection.
+Implement a query planner and executor for a tiny SQL subset (SELECT, WHERE, ORDER BY, LIMIT, JOIN on two tables) over in-memory row stores, with a cost-based choice between nested-loop and hash join.
+
+# TDD-Hostile Edge Cases
+Implement a fixed-precision decimal library with configurable precision and rounding modes (ROUND_HALF_UP, ROUND_HALF_EVEN, ROUND_CEILING, ROUND_FLOOR) for add, sub, mul, and div.
+Implement a persistent red-black tree with functional (copy-on-write) insert and delete that preserves all historical versions and supports O(log n) lookup in any version.
+Implement an online (streaming) suffix tree construction using Ukkonen's algorithm, supporting incremental character append and substring search.

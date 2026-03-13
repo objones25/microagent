@@ -134,11 +134,15 @@ def _load_toml_prompts(version: str) -> dict:
         return tomllib.load(f)
 
 
-_TASKS_FILE = Path(__file__).parent / "evals" / "tasks.txt"
+_EVALS_DIR = Path(__file__).parent / "evals"
+_TASK_FILES = [
+    _EVALS_DIR / "tasks.txt",
+    _EVALS_DIR / "tasks-hard-v2.txt",
+]
 
 
-def _load_tasks_file(path: Path = _TASKS_FILE) -> list[tuple[str, str]]:
-    """Parse evals/tasks.txt into a list of (content, difficulty) tuples.
+def _load_tasks_file(path: Path) -> list[tuple[str, str]]:
+    """Parse a tasks file into a list of (content, difficulty) tuples.
 
     Format: lines starting with '# <difficulty>' set the current difficulty tier;
     blank lines and lines starting with '#' that aren't difficulty markers are skipped;
@@ -191,27 +195,27 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def seed_if_empty(conn: sqlite3.Connection) -> None:
-    """Seed prompts and tasks from bundled data if the DB is empty."""
-    row = conn.execute("SELECT COUNT(*) FROM prompt_versions").fetchone()
-    if row[0] > 0:
-        return  # already seeded
-
+    """Seed prompts if the DB is empty; always sync tasks from all task files."""
     now = datetime.now(timezone.utc).isoformat()
 
-    # Agent prompts — loaded from prompts/*.toml
-    for version in _SEED_PROMPT_FILES:
-        save_prompt_version(conn, version, _load_toml_prompts(version), created_at=now)
+    row = conn.execute("SELECT COUNT(*) FROM prompt_versions").fetchone()
+    if row[0] == 0:
+        # Agent prompts — loaded from prompts/*.toml
+        for version in _SEED_PROMPT_FILES:
+            save_prompt_version(conn, version, _load_toml_prompts(version), created_at=now)
 
-    # Eval prompts — loaded from prompts/*.toml
-    for version in _SEED_EVAL_PROMPT_FILES:
-        save_eval_prompt_version(conn, version, _load_toml_prompts(version), created_at=now)
+        # Eval prompts — loaded from prompts/*.toml
+        for version in _SEED_EVAL_PROMPT_FILES:
+            save_eval_prompt_version(conn, version, _load_toml_prompts(version), created_at=now)
 
-    # Tasks — loaded from evals/tasks.txt
-    for content, difficulty in _load_tasks_file():
-        conn.execute(
-            "INSERT OR IGNORE INTO tasks (content, difficulty, created_at) VALUES (?, ?, ?)",
-            (content, difficulty, now),
-        )
+    # Tasks — always sync from all task files (INSERT OR IGNORE is idempotent)
+    for path in _TASK_FILES:
+        if path.exists():
+            for content, difficulty in _load_tasks_file(path):
+                conn.execute(
+                    "INSERT OR IGNORE INTO tasks (content, difficulty, created_at) VALUES (?, ?, ?)",
+                    (content, difficulty, now),
+                )
 
     conn.commit()
 
