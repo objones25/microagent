@@ -215,7 +215,7 @@ class AgentLoop:
                 solution_path = self.task_dir / "solution.py"
                 if solution_path.exists():
                     result = subprocess.run(
-                        ["pytest", "solution_test.py", "-v"],
+                        ["pytest", "solution_test.py", "-v", "--override-ini=addopts="],
                         cwd=str(self.task_dir),
                         capture_output=True,
                         text=True,
@@ -379,7 +379,8 @@ class AgentLoop:
         """
         result = subprocess.run(
             ["pytest", "solution_test.py", "--cov=solution",
-             "--cov-report=term-missing", "--tb=no", "-q"],
+             "--cov-report=term-missing", "--tb=no", "-q",
+             "--override-ini=addopts="],
             cwd=str(self.task_dir),
             capture_output=True,
             text=True,
