@@ -15,6 +15,19 @@ from tools import TOOL_SCHEMAS, dispatch_tool
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
+
+@dataclass
+class _LoopState:
+    """Mutable state threaded through the implementation loop."""
+    messages: list
+    iteration: int = 0          # resets on approved test revision
+    total_iterations: int = 0   # never resets — used for metrics
+    last_output: str = ""
+    pending_write: bool = False
+    revision_offered: bool = False        # stays True after denial to prevent re-offering
+    original_test_content: Optional[str] = None  # set when revision is active
+    impl_start: float = field(default_factory=time.perf_counter)
+
 _RETRYABLE = (
     anthropic.RateLimitError,
     anthropic.InternalServerError,
@@ -180,166 +193,145 @@ class AgentLoop:
     # ------------------------------------------------------------------
 
     def run_implementation_loop(self, user_prompt: str, test_content: str) -> tuple[bool, str]:
+        state = _LoopState(
+            messages=[{"role": "user", "content": self._build_user_message(user_prompt, test_content)}]
+        )
+        while state.iteration < self.max_iterations:
+            response = self._llm_call(state)
+            tool_calls = [b for b in response.content if b.type == "tool_use"]
+
+            if response.stop_reason == "end_turn":
+                result = self._handle_end_turn(response, state)
+                if result is not None:
+                    return result
+                continue
+
+            if not tool_calls:
+                return self._fail(state, "Agent stopped requesting tools before tests passed.", "test_failure")
+
+            state.messages.append({"role": "assistant", "content": response.content})
+            state.messages.append({"role": "user", "content": self._run_tools(tool_calls, state)})
+            self._maybe_apply_revision(response, state)
+
+        return self._fail(
+            state, f"Max iterations ({self.max_iterations}) reached.", "max_iterations",
+            message=f"Max iterations ({self.max_iterations}) reached.\n{state.last_output}",
+        )
+
+    def _build_user_message(self, user_prompt: str, test_content: str) -> str:
         prompt_md_path = self.task_dir / "solution.prompt.md"
         prompt_md_section = ""
         if prompt_md_path.exists():
             prompt_md_section = self._prompts["prompt_md_section"]["template"].format(
                 prompt_md=prompt_md_path.read_text()
             )
-
-        user_content = self._prompts["implementation"]["user"].format(
+        return self._prompts["implementation"]["user"].format(
             user_prompt=user_prompt,
             test_content=test_content,
             prompt_md_section=prompt_md_section,
         )
 
-        messages: list[dict] = [{"role": "user", "content": user_content}]
-        iteration = 0        # resets on test revision approval (controls max-iter budget)
-        total_iterations = 0  # never resets — used for metrics
-        last_output = ""
-        impl_start = time.perf_counter()
-        pending_write = False
+    def _llm_call(self, state: _LoopState):
+        self.metrics.impl_llm_calls += 1
+        response = self._call_api_with_retry(
+            model=self.model,
+            max_tokens=8096,
+            system=self._prompts["implementation"]["system"],
+            tools=TOOL_SCHEMAS,
+            messages=state.messages,
+        )
+        self.metrics.impl_input_tokens += response.usage.input_tokens
+        self.metrics.impl_output_tokens += response.usage.output_tokens
+        return response
 
-        # Test revision state
-        _revision_offered = False
-        _original_test_content = None
-
-        while iteration < self.max_iterations:
-            self.metrics.impl_llm_calls += 1
-            response = self._call_api_with_retry(
-                model=self.model,
-                max_tokens=8096,
-                system=self._prompts["implementation"]["system"],
-                tools=TOOL_SCHEMAS,
-                messages=messages,
+    def _handle_end_turn(self, response, state: _LoopState) -> tuple[bool, str] | None:
+        """Return (success, message) to stop the loop, or None to continue."""
+        solution_path = self.task_dir / "solution.py"
+        if solution_path.exists():
+            result = subprocess.run(
+                ["pytest", "solution_test.py", "-v", "--override-ini=addopts="],
+                cwd=str(self.task_dir), capture_output=True, text=True, timeout=60,
             )
-            self.metrics.impl_input_tokens += response.usage.input_tokens
-            self.metrics.impl_output_tokens += response.usage.output_tokens
+            final_output = result.stdout + result.stderr
+            if _tests_passed(final_output):
+                self.metrics.impl_duration_s = time.perf_counter() - state.impl_start
+                self.metrics.impl_iterations = state.total_iterations
+                cov = self._measure_coverage()
+                self.metrics.test_coverage_pct = cov
+                self._logger.info(f"  → coverage: {cov:.0f}%" if cov > 0 else "  → coverage: n/a")
+                if self.min_coverage > 0 and cov < self.min_coverage:
+                    reason = f"Test coverage {cov:.0f}% below minimum {self.min_coverage:.0f}%."
+                    return self._fail(state, reason, "coverage")
+                self.metrics.success = True
+                return True, final_output
+            state.last_output = final_output
 
-            tool_calls = [b for b in response.content if b.type == "tool_use"]
+        if self.allow_test_revision and not state.revision_offered:
+            state.revision_offered = True
+            state.original_test_content = (self.task_dir / "solution_test.py").read_text()
+            state.messages.append({"role": "assistant", "content": response.content})
+            state.messages.append({"role": "user", "content": self._prompts["test_revision"]["user"]})
+            self.metrics.test_revisions_attempted += 1
+            self._logger.info("  [test revision offered — agent stopped without passing]")
+            return None
 
-            if response.stop_reason == "end_turn":
-                # Ground-truth check: run pytest ourselves regardless of what the LLM ran
-                solution_path = self.task_dir / "solution.py"
-                if solution_path.exists():
-                    result = subprocess.run(
-                        ["pytest", "solution_test.py", "-v", "--override-ini=addopts="],
-                        cwd=str(self.task_dir),
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                    )
-                    final_output = result.stdout + result.stderr
-                    if _tests_passed(final_output):
-                        self.metrics.impl_duration_s = time.perf_counter() - impl_start
-                        self.metrics.impl_iterations = total_iterations
-                        cov = self._measure_coverage()
-                        self.metrics.test_coverage_pct = cov
-                        cov_str = f"{cov:.0f}%" if cov > 0 else "n/a"
-                        self._logger.info(f"  → coverage: {cov_str}")
-                        if self.min_coverage > 0 and cov < self.min_coverage:
-                            self.metrics.success = False
-                            self.metrics.failure_reason = (
-                                f"Test coverage {cov:.0f}% below minimum {self.min_coverage:.0f}%."
-                            )
-                            self.metrics.failure_category = "coverage"
-                            return False, self.metrics.failure_reason
-                        self.metrics.success = True
-                        return True, final_output
-                    last_output = final_output
+        final_text = next((b.text for b in response.content if b.type == "text"), "")
+        return self._fail(
+            state, "Agent stopped without passing tests.", "test_failure",
+            message=f"Agent stopped without passing tests.\n{final_text}\n\n{state.last_output}",
+        )
 
-                # Offer revision once when agent stops without passing
-                if self.allow_test_revision and not _revision_offered:
-                    _revision_offered = True
-                    _original_test_content = (self.task_dir / "solution_test.py").read_text()
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages.append({
-                        "role": "user",
-                        "content": self._prompts["test_revision"]["user"],
-                    })
-                    self.metrics.test_revisions_attempted += 1
-                    self._logger.info("  [test revision offered — agent stopped without passing]")
-                    continue
+    def _run_tools(self, tool_calls, state: _LoopState) -> list[dict]:
+        tool_results = []
+        for tc in tool_calls:
+            self.metrics.tool_calls[tc.name] = self.metrics.tool_calls.get(tc.name, 0) + 1
+            result_str = dispatch_tool(tc.name, tc.input, self.task_dir)
+            self._log_tool_call(tc, result_str)
 
-                final_text = next(
-                    (b.text for b in response.content if b.type == "text"), ""
-                )
-                self.metrics.impl_duration_s = time.perf_counter() - impl_start
-                self.metrics.impl_iterations = total_iterations
-                self.metrics.success = False
-                self.metrics.failure_reason = "Agent stopped without passing tests."
-                self.metrics.failure_category = "test_failure"
-                return False, f"Agent stopped without passing tests.\n{final_text}\n\n{last_output}"
+            if tc.name == "write_file":
+                self.metrics.impl_write_count += 1
+                state.pending_write = True
+            elif tc.name == "run_subprocess":
+                state.last_output = result_str
+                self.metrics.impl_pytest_runs += 1
+                if state.pending_write:
+                    state.iteration += 1
+                    state.total_iterations += 1
+                    state.pending_write = False
 
-            if not tool_calls:
-                self.metrics.impl_duration_s = time.perf_counter() - impl_start
-                self.metrics.impl_iterations = total_iterations
-                self.metrics.success = False
-                self.metrics.failure_reason = "Agent stopped requesting tools before tests passed."
-                self.metrics.failure_category = "test_failure"
-                return False, "Agent stopped requesting tools before tests passed."
+            tool_results.append({"type": "tool_result", "tool_use_id": tc.id, "content": result_str})
+        return tool_results
 
-            # Append assistant turn
-            messages.append({"role": "assistant", "content": response.content})
+    def _maybe_apply_revision(self, response, state: _LoopState) -> None:
+        if state.original_test_content is None:
+            return
+        current = (self.task_dir / "solution_test.py").read_text()
+        if current == state.original_test_content:
+            return
 
-            # Dispatch all tool calls, build tool_result list
-            tool_results = []
-            for tc in tool_calls:
-                self.metrics.tool_calls[tc.name] = self.metrics.tool_calls.get(tc.name, 0) + 1
-                result_str = dispatch_tool(tc.name, tc.input, self.task_dir)
-                self._log_tool_call(tc, result_str)
+        original = state.original_test_content
+        state.original_test_content = None
+        agent_reasoning = next((b.text for b in response.content if b.type == "text"), "")
+        approved = self._prompt_test_revision_approval(agent_reasoning, original, current)
+        self.metrics.test_revision_reasoning = agent_reasoning
 
-                # State effects: only write_file and run_subprocess carry side effects
-                if tc.name == "write_file":
-                    self.metrics.impl_write_count += 1
-                    pending_write = True
-                elif tc.name == "run_subprocess":
-                    last_output = result_str
-                    self.metrics.impl_pytest_runs += 1
-                    if pending_write:
-                        iteration += 1
-                        total_iterations += 1
-                        pending_write = False
+        if approved:
+            self.metrics.test_revisions_approved += 1
+            state.revision_offered = False
+            state.iteration = 0
+            state.pending_write = False
+            self._logger.info("  [test revision approved — resetting iteration counter]")
+        else:
+            (self.task_dir / "solution_test.py").write_text(original)
+            self._logger.info("  [test revision denied — original tests restored]")
 
-                tool_results.append(
-                    {"type": "tool_result", "tool_use_id": tc.id, "content": result_str}
-                )
-
-            messages.append({"role": "user", "content": tool_results})
-
-            # Check if test file was rewritten after a revision offer
-            if (
-                _revision_offered
-                and _original_test_content is not None
-            ):
-                current_test_content = (self.task_dir / "solution_test.py").read_text()
-                if current_test_content != _original_test_content:
-                    agent_reasoning = next(
-                        (b.text for b in response.content if b.type == "text"), ""
-                    )
-                    approved = self._prompt_test_revision_approval(
-                        agent_reasoning, _original_test_content, current_test_content
-                    )
-                    self.metrics.test_revision_reasoning = agent_reasoning
-
-                    if approved:
-                        self.metrics.test_revisions_approved += 1
-                        iteration = 0
-                        pending_write = False
-                        _revision_offered = False
-                        _original_test_content = None
-                        self._logger.info("  [test revision approved — resetting iteration counter]")
-                    else:
-                        (self.task_dir / "solution_test.py").write_text(_original_test_content)
-                        self._logger.info("  [test revision denied — original tests restored]")
-                        _original_test_content = None
-
-        self.metrics.impl_duration_s = time.perf_counter() - impl_start
-        self.metrics.impl_iterations = total_iterations
+    def _fail(self, state: _LoopState, reason: str, category: str, *, message: str = "") -> tuple[bool, str]:
+        self.metrics.impl_duration_s = time.perf_counter() - state.impl_start
+        self.metrics.impl_iterations = state.total_iterations
         self.metrics.success = False
-        self.metrics.failure_reason = f"Max iterations ({self.max_iterations}) reached."
-        self.metrics.failure_category = "max_iterations"
-        return False, f"Max iterations ({self.max_iterations}) reached.\n{last_output}"
+        self.metrics.failure_reason = reason
+        self.metrics.failure_category = category
+        return False, message or reason
 
     def _log_tool_call(self, tc, result_str: str) -> None:
         """Emit one structured log line per tool call."""
