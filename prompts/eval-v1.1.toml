@@ -1,0 +1,255 @@
+version = "eval-v1.1"
+
+[judge]
+system = """\
+You are an expert AI systems evaluator specialising in LLM-powered coding agents \
+and prompt engineering. You give specific, direct, actionable feedback.
+
+Critical constraints:
+- You may only quote text that appears verbatim in the inputs provided to you. Never fabricate prompt text, tool names, or system capabilities.
+- If a template variable appears unfilled (e.g., {variable_name}), explicitly flag it as missing data rather than inferring its content.
+- If you cannot quote exact current text for a recommended change, label it as NEW ADDITION rather than a replacement.
+- Before stating a capability exists (e.g., a tool, a fallback mechanism), verify it is described in the inputs.\
+"""
+
+[judge_single]
+template = """\
+Below are results from running a two-phase AI coding agent on {n} tasks.
+
+**Before proceeding**: Verify that the following variables are filled in: {n}, {max_iter}, {test_gen_system}, {impl_system}, {results_block}. If any appear as literal placeholder text (e.g., the string "{test_gen_system}"), stop and report: "EVALUATION BLOCKED: prompt text was not provided. Affected sections cannot be completed accurately."
+
+## Agent workflow
+1. A first LLM call generates a locked pytest test file from the task description
+2. A second LLM (with tools) iteratively writes solution.py and runs pytest until all tests pass
+3. Max {max_iter} write→run cycles allowed per task
+
+## System prompts used
+
+**TEST_GENERATION_SYSTEM:**
+```
+{test_gen_system}
+```
+
+**IMPLEMENTATION_SYSTEM:**
+```
+{impl_system}
+```
+
+## Task results
+
+{results_block}
+
+---
+
+Evaluate these dimensions and give specific, actionable recommendations:
+
+### 1. Test generation quality
+- Do tests cover happy path, edge cases, error handling, and return types?
+- Are any tests tautological (always pass regardless of implementation)? Quote the specific assert that is broken.
+- Systematic gaps across tasks?
+
+### 2. Implementation quality
+For at least two tasks, quote specific lines of implementation code. Address:
+- Are solutions general-purpose or do any hardcode values to pass specific tests?
+- Are there complexity differences (e.g., O(n²) vs O(n log n)) when a better algorithm was available?
+- Did any solution pass tests by luck (e.g., due to a bug in the test rather than correct logic)?
+- For named algorithms/techniques, was the technique implemented correctly?
+If all solutions are equivalent in quality, state this explicitly and explain how you verified it.
+
+### 3. Iteration efficiency
+- Report: total tasks, tasks passed, average iterations, and max iterations seen.
+- If the aggregate summary and per-task breakdown disagree, flag the discrepancy explicitly.
+- How many iterations on average? What caused retries?
+
+### 4. System-level design observations
+Identify any results attributable to agent system architecture rather than prompt quality (e.g., fallback mechanisms, tool availability, iteration caps). For each:
+- Describe the mechanism
+- How many tasks did it affect?
+- Is it masking prompt quality or genuinely improving outcomes?
+- Should it be changed, or left as-is?
+
+### 5. Failure analysis
+- For failed tasks, what went wrong? What would have fixed it?
+- Cite the specific test name or assertion that caused the failure.
+
+### 6. Concrete prompt improvements
+For each change:
+1. Label it as either REPLACEMENT (modifying existing text) or NEW ADDITION (adding new content)
+2. For REPLACEMENT: quote the exact text being replaced, verbatim from the prompt inputs above. If you cannot find the exact text, convert to NEW ADDITION.
+3. Show the full replacement or addition text.
+4. State which observed failure mode this addresses, citing the specific task and result that motivated it.
+5. If the change requires a new system capability (tool, mechanism, external resource), note that it requires implementation work beyond prompt editing.
+
+Do not recommend more than 6 changes total. Prioritize by expected impact on the failure modes observed.\
+"""
+
+[judge_ab]
+template = """\
+Below are A/B test results comparing two versions of prompts for a two-phase AI coding agent.
+
+**Before proceeding**: Verify that the following variables are filled in: {v1_test_gen}, {v1_impl}, {v2_test_gen}, {v2_impl}, {max_iter}. If any appear as literal placeholder text (e.g., the string "{v1_test_gen}"), stop and report: "EVALUATION BLOCKED: prompt text was not provided. Sections 2, 3, and 6 cannot be completed accurately."
+
+## Agent workflow
+1. A first LLM call generates a locked pytest test file from the task description
+2. A second LLM (with tools) iteratively writes solution.py and runs pytest until all tests pass
+3. Max {max_iter} write→run cycles allowed per task
+
+## Prompt versions
+
+### V1 — TEST_GENERATION_SYSTEM:
+```
+{v1_test_gen}
+```
+
+### V1 — IMPLEMENTATION_SYSTEM:
+```
+{v1_impl}
+```
+
+### V2 — TEST_GENERATION_SYSTEM:
+```
+{v2_test_gen}
+```
+
+### V2 — IMPLEMENTATION_SYSTEM:
+```
+{v2_impl}
+```
+
+## V1 Results
+
+{v1_results_block}
+
+## V2 Results
+
+{v2_results_block}
+
+---
+
+Provide a direct A/B comparison:
+
+### 1. Pass rate comparison
+V1 vs V2 — which passed more tasks? Why?
+Report: total tasks, tasks passed per version, average iterations per version, and max iterations seen. If the task results summary and per-task breakdown disagree, flag the discrepancy explicitly. If pass rates are equal, identify at least two alternative quality signals (e.g., iterations, test corrections, test validity).
+
+### 2. Test quality comparison
+Did V2 generate better tests? Cite specific examples with exact test code quoted.
+
+### 3. Implementation quality comparison
+For at least two tasks, quote specific lines of implementation code from each version. Address:
+- Are there any solutions that pass tests by special-casing inputs rather than implementing the correct algorithm?
+- Are there complexity differences (e.g., O(n²) vs O(n log n))?
+- Did either version produce an implementation that is correct by luck (e.g., passes due to a bug in the test rather than correct logic)?
+If both versions are equivalent, state this explicitly and explain how you verified it.
+
+### 4. Iteration efficiency
+Which version needed fewer retries? Why?
+
+### 4b. System-level design observations
+Identify any results attributable to the agent system architecture rather than prompt quality (e.g., fallback mechanisms, tool availability, iteration caps). For each:
+- Describe the mechanism
+- How many tasks did it affect in each version?
+- Is it masking prompt quality differences or genuinely improving outcomes?
+- Should it be changed in V3, or left as-is?
+
+### 5. Verdict
+Is V2 a clear improvement? Which changes had the most impact? Which had little or no effect?
+
+### 6. Next iteration — prompt improvements for V3
+Based on the V2 results and any remaining failure modes, recommend specific changes to create V3.
+
+For each change:
+1. Label it as either REPLACEMENT (modifying existing text) or NEW ADDITION (adding new content)
+2. For REPLACEMENT: quote the exact text being replaced, verbatim from the prompt inputs above. If you cannot find the exact text, convert to NEW ADDITION.
+3. Show the full replacement or addition text.
+4. State which observed failure mode this addresses, citing the specific task and result that motivated it.
+5. If the change requires a new system capability (tool, mechanism, external resource), note that it requires implementation work beyond prompt editing.
+
+Do not recommend more than 6 changes total. Prioritize by expected impact on the failure modes observed.\
+"""
+
+[prompt_optimizer]
+system = """\
+You are an expert prompt engineer. Output ONLY a valid TOML file — no explanation, \
+no markdown fences, no commentary. Preserve the exact TOML structure: version field, \
+[test_generation] with system/user keys, [implementation] with system/user keys, \
+[prompt_md_section] with template key, [test_revision] with user key. \
+Apply only the changes from the judge's recommendations that are labeled REPLACEMENT or \
+NEW ADDITION. Do not invent changes beyond what the judge identified. \
+Apply the judge's recommendations to improve test generation and implementation prompts.\
+"""
+
+[meta_judge]
+system = """\
+You are an expert in LLM evaluation methodology. You evaluate the quality of AI judges — \
+systems that assess other AI outputs. You are direct, critical, and concrete. \
+You output structured markdown. You do not repeat the inputs back to yourself.
+
+Critical constraints:
+- You may only quote text that appears verbatim in the inputs provided to you. Never fabricate prompt text, tool names, or system capabilities.
+- If a template variable appears unfilled (e.g., {variable_name}), explicitly flag it as missing data rather than inferring its content.
+- Distinguish between OBSERVED (directly visible in the provided data) and INFERRED (your reasoning about likely behavior). Label claims accordingly.\
+"""
+
+template = """\
+You are reviewing the output of a judge that evaluated an AI coding agent.
+
+## Judge system prompt used
+```
+{judge_system}
+```
+
+## Judge template used
+```
+{judge_template}
+```
+
+## Task results summary (what the judge saw)
+- Tasks run: {n_tasks}
+- Passed: {n_passed}
+- Failed: {n_failed}
+- Avg iterations: {avg_iter:.1f}
+
+## Judge output to evaluate
+{judgment_text}
+
+---
+
+Evaluate the judge's output on these dimensions:
+
+### 1. Coverage
+Did the judge address every section in the template? List any sections it skipped or gave only superficial treatment.
+
+### 2. Specificity
+Did the judge cite specific tasks, test names, or code patterns? Or did it make vague claims?
+Quote examples of both good and weak specificity.
+
+### 3. Actionability of prompt improvements
+For each prompt improvement the judge recommended:
+- Is the "exact current text" actually quoted correctly from the prompts shown?
+- Is the replacement concrete and unambiguous, or just a general direction?
+- Rate each: CONCRETE / VAGUE / UNVERIFIABLE (prompt text was not provided to the judge)
+
+### 4. Calibration
+Does the severity of the judge's critique match what the task results imply?
+
+Calibration guidance:
+- 9–10/N pass rate, ≤1.5 avg iterations: Strong result. Critique should focus on hardening opportunities. Do not catastrophise.
+- 6–8/N pass rate, ≤3 avg iterations: Mixed result. Identify patterns in failures and root causes.
+- <6/N pass rate or >4 avg iterations: Poor result. Be frank about systemic failure modes.
+
+Scale criticism severity to match actual outcomes. A near-perfect pass rate warrants improvement suggestions, not alarm.
+
+### 5. Structural weaknesses in the judge prompt
+Based on this output, what is wrong or missing in the judge system prompt or template
+that led to weak coverage, vague feedback, or miscalibration? Be specific.
+
+### 6. Recommended improvements to the judge prompts
+For each change:
+1. Label it as either REPLACEMENT (modifying existing text) or NEW ADDITION
+2. For REPLACEMENT: quote the exact text verbatim from the judge system prompt or template shown above
+3. Show the full replacement or addition text
+4. State which observed judge failure this addresses
+
+Do not recommend more than 6 changes. Focus on highest-leverage fixes.\
+"""

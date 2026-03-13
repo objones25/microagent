@@ -1,0 +1,10 @@
+Implement a Trie data structure with insert(word), search(word), starts_with(prefix), and autocomplete(prefix) methods — autocomplete returns a sorted list of all words in the trie that begin with the given prefix
+Write a StreamingMedian class with add(num) and get_median() methods that maintain the running median in O(log n) per add using two heaps
+Implement Dijkstra's shortest path algorithm: given a weighted directed graph as an adjacency dict, return the shortest distances from a source node and reconstruct the full path to any given target node
+Implement an LFU (Least Frequently Used) cache with get(key) and put(key, value) — evicts the least frequently used key, with ties broken by least recently used, all operations O(1)
+Write a word_break_all function that returns all ways to segment a string into space-separated words from a given dictionary, returning a list of sentences (e.g. "catsanddog" → ["cats and dog", "cat sand dog"])
+Implement a JSON parser that handles nested objects, arrays, strings (with escape sequences \n \t \\ \"), numbers (int and float), booleans, and null — without using json.loads
+Write a topological_sort function for a directed graph given as an adjacency dict; it should return the sorted order if no cycle exists, or raise a ValueError naming a node in the cycle if one is detected
+Implement a min-heap from scratch (no heapq) with insert(val), extract_min(), and decrease_key(index, new_val) operations — all in O(log n)
+Write a diff function that takes two strings and returns a minimal list of Edit operations (each with type "insert"/"delete", position, and character) that transforms the first string into the second, using the shortest edit distance
+Implement a ConsistentHashRing with add_node(name), remove_node(name), and get_node(key) — uses virtual nodes (configurable replication factor) to distribute keys evenly and minimize remapping when nodes are added or removed
