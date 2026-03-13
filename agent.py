@@ -287,66 +287,22 @@ class AgentLoop:
             for tc in tool_calls:
                 self.metrics.tool_calls[tc.name] = self.metrics.tool_calls.get(tc.name, 0) + 1
                 result_str = dispatch_tool(tc.name, tc.input, self.task_dir)
+                self._log_tool_call(tc, result_str)
 
-                # Granular per-tool logging
-                if tc.name == "read_file":
-                    path = tc.input.get("path", "?")
-                    self._logger.info(f"  → read_file: {path}")
-
-                elif tc.name == "write_file":
-                    path = tc.input.get("path", "?")
-                    content = tc.input.get("content", "")
-                    line_count = content.count("\n") + 1 if content else 0
-                    self._logger.info(f"  → write_file: {path} ({line_count} lines)")
+                # State effects: only write_file and run_subprocess carry side effects
+                if tc.name == "write_file":
                     self.metrics.impl_write_count += 1
                     pending_write = True
-
                 elif tc.name == "run_subprocess":
-                    cmd = tc.input.get("command", [])
-                    cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
-                    self._logger.info(f"  → run_subprocess: {cmd_str}")
                     last_output = result_str
                     self.metrics.impl_pytest_runs += 1
-                    summary, failed_names = _parse_pytest_result(result_str)
-                    if failed_names:
-                        failing_str = ", ".join(failed_names[:5])
-                        self._logger.info(f"    ✗ {summary} | failing: {failing_str}")
-                    elif summary:
-                        self._logger.info(f"    ✓ {summary}")
-                    # Increment iteration on write→run pair
                     if pending_write:
                         iteration += 1
                         total_iterations += 1
                         pending_write = False
 
-                elif tc.name == "context7_docs":
-                    library = tc.input.get("library", "?")
-                    query = tc.input.get("query", "")
-                    self._logger.info(f"  → context7_docs: {library} — {query[:60]}")
-
-                elif tc.name == "firecrawl_search":
-                    query = tc.input.get("query", "")
-                    self._logger.info(f'  → firecrawl_search: "{query[:60]}"')
-
-                elif tc.name == "firecrawl_scrape":
-                    url = tc.input.get("url", "?")
-                    self._logger.info(f"  → firecrawl_scrape: {url}")
-
-                elif tc.name == "run_python":
-                    code = tc.input.get("code", "")
-                    preview = code.splitlines()[0][:60] if code else "?"
-                    self._logger.info(f"  → run_python: {preview}")
-
-                elif tc.name == "calculator":
-                    expr = tc.input.get("expression", "?")
-                    self._logger.info(f"  → calculator: {expr} = {result_str}")
-
                 tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tc.id,
-                        "content": result_str,
-                    }
+                    {"type": "tool_result", "tool_use_id": tc.id, "content": result_str}
                 )
 
             messages.append({"role": "user", "content": tool_results})
@@ -384,6 +340,36 @@ class AgentLoop:
         self.metrics.failure_reason = f"Max iterations ({self.max_iterations}) reached."
         self.metrics.failure_category = "max_iterations"
         return False, f"Max iterations ({self.max_iterations}) reached.\n{last_output}"
+
+    def _log_tool_call(self, tc, result_str: str) -> None:
+        """Emit one structured log line per tool call."""
+        inp = tc.input
+        match tc.name:
+            case "read_file":
+                self._logger.info(f"  → read_file: {inp.get('path', '?')}")
+            case "write_file":
+                content = inp.get("content", "")
+                lines = content.count("\n") + 1 if content else 0
+                self._logger.info(f"  → write_file: {inp.get('path', '?')} ({lines} lines)")
+            case "run_subprocess":
+                cmd = inp.get("command", [])
+                self._logger.info(f"  → run_subprocess: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+                summary, failed_names = _parse_pytest_result(result_str)
+                if failed_names:
+                    self._logger.info(f"    ✗ {summary} | failing: {', '.join(failed_names[:5])}")
+                elif summary:
+                    self._logger.info(f"    ✓ {summary}")
+            case "context7_docs":
+                self._logger.info(f"  → context7_docs: {inp.get('library', '?')} — {inp.get('query', '')[:60]}")
+            case "firecrawl_search":
+                self._logger.info(f'  → firecrawl_search: "{inp.get("query", "")[:60]}"')
+            case "firecrawl_scrape":
+                self._logger.info(f"  → firecrawl_scrape: {inp.get('url', '?')}")
+            case "run_python":
+                code = inp.get("code", "")
+                self._logger.info(f"  → run_python: {code.splitlines()[0][:60] if code else '?'}")
+            case "calculator":
+                self._logger.info(f"  → calculator: {inp.get('expression', '?')} = {result_str}")
 
     def _measure_coverage(self) -> float:
         """Run pytest-cov on solution.py and return coverage percentage (0–100).
