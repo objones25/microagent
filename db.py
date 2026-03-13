@@ -123,8 +123,8 @@ CREATE TABLE IF NOT EXISTS eval_judgments (
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 # Which TOML files to seed as agent prompts and eval prompts on first run.
-_SEED_PROMPT_FILES: list[str] = ["v1", "v2", "v2.1", "v2.2", "v2.3", "v2.4"]
-_SEED_EVAL_PROMPT_FILES: list[str] = ["eval-v1", "eval-v1.1", "eval-v1.2"]
+_SEED_PROMPT_FILES: list[str] = ["v1", "v2", "v2.1", "v2.2", "v2.3", "v2.4", "v2.5"]
+_SEED_EVAL_PROMPT_FILES: list[str] = ["eval-v1", "eval-v1.1", "eval-v1.2", "eval-v1.3"]
 
 
 def _load_toml_prompts(version: str) -> dict:
