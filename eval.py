@@ -86,18 +86,12 @@ def format_results_block(metrics_list: list[RunMetrics]) -> str:
         sol_snippet = ""
         sol_path = task_dir / "solution.py"
         if sol_path.exists():
-            lines = sol_path.read_text().splitlines()
-            preview = "\n".join(lines[:40])
-            if len(lines) > 40:
-                preview += f"\n  ... ({len(lines) - 40} more lines)"
-            sol_snippet = f"\n\n**solution.py:**\n```python\n{preview}\n```"
+            sol_snippet = f"\n\n**solution.py:**\n```python\n{sol_path.read_text()}\n```"
 
         pytest_snippet = ""
         log_path = task_dir / "run.log"
         if log_path.exists():
-            log_lines = log_path.read_text().splitlines()
-            trimmed = "\n".join(log_lines[-20:])
-            pytest_snippet = f"\n\n**run.log (last 20 lines):**\n```\n{trimmed}\n```"
+            pytest_snippet = f"\n\n**run.log:**\n```\n{log_path.read_text()}\n```"
 
         cov_note = f"\n- **Coverage**: {m.test_coverage_pct:.0f}%" if m.test_coverage_pct > 0 else ""
         blocks.append(

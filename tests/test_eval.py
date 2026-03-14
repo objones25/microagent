@@ -89,12 +89,12 @@ class TestFormatResultsBlock:
         assert "solution.py" in block
 
     def test_includes_solution_long(self, tmp_path):
-        """solution.py > 40 lines triggers the truncation branch."""
-        lines = "\n".join(f"x_{i} = {i}" for i in range(50))
-        (tmp_path / "solution.py").write_text(lines)
+        """solution.py > 40 lines is included in full."""
+        content = "\n".join(f"x_{i} = {i}" for i in range(50))
+        (tmp_path / "solution.py").write_text(content)
         m = make_metrics(task="t5", task_dir=str(tmp_path))
         block = format_results_block([m])
-        assert "more lines" in block
+        assert "x_49 = 49" in block
 
     def test_includes_log_snippet(self, tmp_path):
         (tmp_path / "run.log").write_text("line1\nline2\n")
