@@ -298,8 +298,8 @@ def run_suite(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate microagent on a suite of coding tasks")
-    parser.add_argument("--prompts", default="v2.4", metavar="VERSION",
-                        help="Agent prompts version to use (default: v2.4)")
+    parser.add_argument("--prompts", default="v2.6", metavar="VERSION",
+                        help="Agent prompts version to use (default: v2.6)")
     parser.add_argument("--compare", default=None, metavar="VERSION",
                         help="Second agent prompts version to A/B test against --prompts")
     parser.add_argument("--tasks", type=int, default=10,
@@ -312,8 +312,8 @@ def main() -> None:
                         help="After judge analysis, call Claude to produce an improved prompt version in DB")
     parser.add_argument("--meta-judge", action="store_true",
                         help="After judging, call Claude to evaluate the quality of the judge's output")
-    parser.add_argument("--eval-prompts", default="eval-v1.2", metavar="VERSION",
-                        help="Eval prompts version (judge, optimizer, meta-judge) (default: eval-v1.2)")
+    parser.add_argument("--eval-prompts", default="eval-v1.3", metavar="VERSION",
+                        help="Eval prompts version (judge, optimizer, meta-judge) (default: eval-v1.3)")
     parser.add_argument("--allow-test-revision", action="store_true",
                         help="When the agent stops without passing tests, offer it a chance to revise tests (requires --auto-approve-revision for non-interactive use)")
     parser.add_argument("--auto-approve-revision", action="store_true",
