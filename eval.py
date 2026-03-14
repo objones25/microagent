@@ -173,7 +173,7 @@ def run_judge_single(
     print("\nCalling judge...", flush=True)
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8096,
+        max_tokens=16000,
         system=eval_prompts["judge"]["system"],
         messages=[{"role": "user", "content": user_content}],
     )
@@ -201,7 +201,7 @@ def run_judge_ab(
     print("\nCalling A/B judge...", flush=True)
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8096,
+        max_tokens=16000,
         system=eval_prompts["judge"]["system"],
         messages=[{"role": "user", "content": user_content}],
     )
@@ -232,7 +232,7 @@ def run_meta_judge(
     print("\nCalling meta-judge...", flush=True)
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8096,
+        max_tokens=16000,
         system=eval_prompts["meta_judge"]["system"],
         messages=[{"role": "user", "content": user_content}],
     )
