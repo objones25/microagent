@@ -51,7 +51,7 @@ uv run python microagent.py "Write RLE encode/decode" --allow-test-revision
 | `--task-dir`              | `task-YYYYMMDD-HHMMSS/` | Directory for task files                                                       |
 | `--model`                 | `claude-sonnet-4-6`     | Claude model to use                                                            |
 | `--max-iterations`        | `10`                    | Max write→run cycles before giving up                                          |
-| `--prompts`               | `v2.6`                  | Agent prompts version (key in `microagent.db`, seeded from `prompts/<v>.toml`) |
+| `--prompts`               | `v2.7`                  | Agent prompts version (key in `microagent.db`, seeded from `prompts/<v>.toml`) |
 | `--allow-test-revision`   | off                     | When the agent stops without passing, offer it a chance to revise the tests    |
 | `--auto-approve-revision` | off                     | Automatically approve test revisions without prompting                         |
 
@@ -106,14 +106,14 @@ Tasks are randomly sampled from the DB pool (100 tasks across easy/standard/hard
 
 | Flag                      | Default   | Description                                                          |
 | ------------------------- | --------- | -------------------------------------------------------------------- |
-| `--prompts`               | `v2.6`    | Agent prompts version to evaluate                                    |
+| `--prompts`               | `v2.7`    | Agent prompts version to evaluate                                    |
 | `--compare`               | —         | Second prompts version for A/B test                                  |
 | `--tasks`                 | `10`      | Number of tasks to randomly sample from DB                           |
 | `--max-iter`              | `5`       | Max implementation iterations per task                               |
 | `--out`                   | —         | Write raw results JSON to this path                                  |
 | `--optimize`              | off       | After judging, generate an improved prompt version and save it to DB |
 | `--meta-judge`            | off       | After judging, evaluate the judge's own output quality               |
-| `--eval-prompts`          | `eval-v1.3` | Judge/optimizer/meta-judge prompts version                         |
+| `--eval-prompts`          | `eval-v1.4` | Judge/optimizer/meta-judge prompts version                         |
 | `--allow-test-revision`   | off       | Allow agent to revise tests when stuck                               |
 | `--auto-approve-revision` | off       | Auto-approve test revisions (required for non-interactive eval use)  |
 
@@ -178,11 +178,13 @@ microagent/
 │   ├── v2.3.toml     # Agent prompts v2.3
 │   ├── v2.4.toml     # Agent prompts v2.4
 │   ├── v2.5.toml     # Agent prompts v2.5
-│   ├── v2.6.toml     # Agent prompts v2.6 (current best)
+│   ├── v2.6.toml     # Agent prompts v2.6
+│   ├── v2.7.toml     # Agent prompts v2.7 (current best)
 │   ├── eval-v1.toml  # Eval prompts v1
 │   ├── eval-v1.1.toml # Eval prompts v1.1
 │   ├── eval-v1.2.toml # Eval prompts v1.2
-│   └── eval-v1.3.toml # Eval prompts v1.3 (current best)
+│   ├── eval-v1.3.toml # Eval prompts v1.3
+│   └── eval-v1.4.toml # Eval prompts v1.4 (current best)
 └── tests/
     ├── conftest.py   # Shared fixtures and mock helpers
     ├── test_agent.py
@@ -199,10 +201,10 @@ microagent/
 Loaded from `microagent.db` at runtime (seeded from `prompts/*.toml` on first run). To iterate:
 
 ```bash
-cp prompts/v2.6.toml prompts/v3.toml
+cp prompts/v2.7.toml prompts/v3.toml
 # edit prompts/v3.toml, then reseed:
 rm microagent.db
-uv run python eval.py --compare v3     # A/B test v2.6 vs v3
+uv run python eval.py --compare v3     # A/B test v2.7 vs v3
 ```
 
 | Section               | Key        | Used as                                                                 |
@@ -226,13 +228,14 @@ uv run python eval.py --compare v3     # A/B test v2.6 vs v3
 | `v2.4`  | Based on auto-optimized `20260313-125033`: membership-assertion verification before writing `not in` tests; combinatorial formula verification with small-n enumeration; type-only assertions must be in same function as value assertion; `n=0` constructor tests for data structures; minimal-instance interface contract tests; `TEST_BUG:` must cite exact assertion line and correct value |
 | `v2.5`  | Complexity guard tests for tasks with specified O-complexity; strengthened general DP cross-check (restored from stock-trading-specific narrowing); stricter palindrome membership brute-force rule with index-position verification |
 | `v2.6`  | Best-of-breed from v2.5 + auto-optimized variants: bare `try/except: pass` prohibition extended to all nesting levels; `time.sleep`-based thread pool tests explicitly forbidden when a future/result blocking interface is available; palindrome substring membership requires index enumeration; restored general DP cross-check rule |
+| `v2.7`  | Agent forbidden from requesting test modification; complexity guard n-values calibrated per complexity class (100k/10k/50k); `or`-prohibition extended to set-membership assertions and search return values; segment-tree loser-propagation adversarial test required; implementation must declare complexity class in comment before writing code |
 
 ### Eval prompts
 
 Controls the judge, A/B judge, prompt optimizer, and meta-judge:
 
 ```bash
-cp prompts/eval-v1.3.toml prompts/eval-v2.toml
+cp prompts/eval-v1.4.toml prompts/eval-v2.toml
 # edit, reseed, then use:
 rm microagent.db && uv run python eval.py --eval-prompts eval-v2
 ```
@@ -253,6 +256,7 @@ rm microagent.db && uv run python eval.py --eval-prompts eval-v2
 | `eval-v1.1` | Verification constraints (no fabricating text/tools); placeholder guards (EVALUATION BLOCKED if vars unfilled); implementation depth requirements; data reconciliation; system-level design section; REPLACEMENT/NEW ADDITION labeling |
 | `eval-v1.2` | Adds `api_retries` and `failure_category` to judge context; `failure_category_counts` breakdown in A/B summary; judge instructed to distinguish API errors from agent failures |
 | `eval-v1.3` | Strengthened placeholder guards (`{v1_results_block}`, `{v2_results_block}` added to block list); OBSERVED/INFERRED labels required per-claim with source location; task-count range must be stated before verification; thread-pool and complexity-guard evaluation criteria added |
+| `eval-v1.4` | Adds test-revision mechanism description to agent workflow; judge required to flag revision-assisted passes separately, compare original vs. revised test counts, and assess whether revision was legitimate |
 
 ### Task pool
 
