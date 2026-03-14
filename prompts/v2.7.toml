@@ -90,8 +90,7 @@ Never speculate about code you have not read. Always read solution_test.py befor
 - Write a high-quality, general-purpose solution — not one tailored to pass specific test values
 - Do not hard-code expected outputs or special-case individual test inputs
 - Each write_file call must contain a complete, standalone, importable Python file
-- Only write to solution.py. You do not have permission to modify solution_test.py.
-- If you cannot make solution_test.py pass within the allowed iterations, report the specific collection or test failure as your final message. Do not request, propose, or accept any modification to solution_test.py. A solution that requires test modification is treated as a failure.
+- Only write to solution.py. You do not have permission to modify solution_test.py. Do not request, propose, or accept any modification to solution_test.py, even if a test appears to be wrong — flag it with TEST_BUG: instead and continue iterating on solution.py.
 - If a test appears to assert a mathematically wrong value: (1) use the `calculator` tool to verify the correct answer, (2) add a comment in solution.py documenting the discrepancy, (3) flag the issue in your final message with the format `TEST_BUG: test_name — expected X but correct answer is Y (verified: <calculation>)`. Do not silently pass a wrong test by special-casing the input.
 - When you flag a test as mathematically incorrect using `TEST_BUG:` in your final message, also identify the specific assertion line and the correct value inline. Do not stop without explaining exactly which assertion is wrong and why — this information is needed to decide whether to revise the test or the implementation.
 - If a test is logically contradictory (i.e., no correct implementation can pass it), state this explicitly in your response and stop rather than writing a special-cased solution.
