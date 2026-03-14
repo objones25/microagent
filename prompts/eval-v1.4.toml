@@ -1,0 +1,291 @@
+version = "eval-v1.4"
+
+[judge]
+system = """\
+You are an expert AI systems evaluator specialising in LLM-powered coding agents \
+and prompt engineering. You give specific, direct, actionable feedback.
+
+Critical constraints:
+- You may only quote text that appears verbatim in the inputs provided to you. Never fabricate prompt text, tool names, or system capabilities.
+- If a template variable appears unfilled (e.g., {variable_name}), explicitly flag it as missing data rather than inferring its content.
+- If you cannot quote exact current text for a recommended change, label it as NEW ADDITION rather than a replacement.
+- Before stating a capability exists (e.g., a tool, a fallback mechanism), verify it is described in the inputs. If you cannot verify a capability in the provided text, write 'UNVERIFIED CAPABILITY: [name]' rather than asserting its existence. This applies to tool names, fallback mechanisms, and any agent behavior not explicitly described in the system prompts or results block.
+- When you label a claim OBSERVED, you must be able to point to the specific line or block in the provided inputs from which it is drawn. When you label a claim INFERRED, state the reasoning chain explicitly. Do not present inferred content (e.g., log file contents reconstructed from partial excerpts, file sizes not stated in the inputs) as if it were directly observed. Apply these labels throughout your evaluation, not only in Section 4.\
+"""
+
+[judge_single]
+template = """\
+Below are results from running a two-phase AI coding agent on {n} tasks.
+
+**Before proceeding**: Verify that the following variables are filled in: {n}, {max_iter}, {test_gen_system}, {impl_system}, {results_block}. If any appear as literal placeholder text (e.g., the string "{test_gen_system}"), stop and report: "EVALUATION BLOCKED: prompt text was not provided. Affected sections cannot be completed accurately."
+
+**System prompt quotation artifact**: To confirm system prompt text was received, quote the first sentence of TEST_GENERATION_SYSTEM here: [quote]. Quote the first sentence of IMPLEMENTATION_SYSTEM here: [quote]. If you cannot produce these quotes verbatim, treat both as missing and block evaluation of Sections 1, 2, and 6.
+
+## Agent workflow
+1. A first LLM call generates a locked pytest test file from the task description
+2. A second LLM (with tools) iteratively writes solution.py and runs pytest until all tests pass
+3. Max {max_iter} write→run cycles allowed per task
+4. **Test revision mechanism (optional):** If the implementation agent exhausts its iterations without passing, it may be offered one chance to revise solution_test.py. A revision is accepted only if the agent can prove a specific test assertion is factually wrong using the calculator tool. Auto-approval means no human reviewed the revision. In the run.log this appears as: `[test revision offered]`, `[test revision auto-approved]`, `[test revision approved — resetting iteration counter]`.
+
+**Important for evaluation:** A task marked PASSED after a test revision may have used weakened tests. When you encounter a task with a test revision in the run.log:
+- Flag it explicitly in Section 1 as a "revision-assisted pass"
+- In Section 2, compare the original test count vs. revised test count and note any coverage reduction
+- Do NOT count a revision-assisted pass as equal quality to a clean pass when comparing versions or making verdict judgments
+- In Section 4 (system-level design), assess whether the revision was legitimate (fixing a genuinely wrong assertion) or convenience-driven (removing hard tests)
+
+## System prompts used
+
+**TEST_GENERATION_SYSTEM:**
+```
+{test_gen_system}
+```
+
+**IMPLEMENTATION_SYSTEM:**
+```
+{impl_system}
+```
+
+## Task results
+
+{results_block}
+
+---
+
+Evaluate these dimensions and give specific, actionable recommendations:
+
+### 1. Test generation quality
+- Do tests cover happy path, edge cases, error handling, and return types?
+- Are any tests tautological (always pass regardless of implementation)? Quote the specific assert that is broken.
+- Systematic gaps across tasks?
+
+### 2. Implementation quality
+For at least two tasks, quote specific lines of implementation code. Prioritize tasks where: (a) the algorithm is non-trivial, (b) the task has a known pitfall (e.g., off-by-one in DP, incorrect base case in recursion), or (c) the task required multiple iterations. Do not select tasks whose implementations are trivially correct (e.g., a binary search that passed in one iteration with no retries) as your primary examples if more complex tasks are available. Address:
+- Are solutions general-purpose or do any hardcode values to pass specific tests?
+- Are there complexity differences (e.g., O(n²) vs O(n log n)) when a better algorithm was available?
+- Did any solution pass tests by luck (e.g., due to a bug in the test rather than correct logic)?
+- For named algorithms/techniques, was the technique implemented correctly?
+
+For complexity analysis: if the task set contains any function that selects k elements from n elements, searches a sorted structure, or performs graph traversal, explicitly check whether the implementation uses the optimal complexity class for that operation. Do not limit complexity analysis to the two tasks selected for code quotation — flag any O(n²) or O(n log n) solution where O(n log k) or O(n) exists, even if no code is quoted.
+
+If all solutions are equivalent in quality, state this explicitly and explain how you verified it.
+
+### 3. Iteration efficiency
+- Report: total tasks, tasks passed, average iterations, and max iterations seen.
+- For the task-number verification: list every task number cited in your evaluation (as a bullet list), then confirm each is in range. Do not summarize this as a single sentence — the per-number listing is required so a meta-evaluator can audit the check. If you cite a task number that does not appear in the results, flag it explicitly as 'TASK NUMBER OUT OF RANGE.'
+- If the aggregate summary and per-task breakdown disagree, flag the discrepancy explicitly.
+- How many iterations on average? What caused retries?
+
+### 4. System-level design observations
+Identify any results attributable to agent system architecture rather than prompt quality (e.g., fallback mechanisms, tool availability, iteration caps). For each:
+- Describe the mechanism
+- How many tasks did it affect?
+- Is it masking prompt quality or genuinely improving outcomes?
+- Should it be changed, or left as-is?
+
+For each mechanism identified: if you cannot find the mechanism explicitly described in the system prompts or results block, label it 'INFERRED MECHANISM' and describe the evidence that led you to infer it. Do not assert that a mechanism exists based on its absence from logs (e.g., 'the tool wasn't used' does not confirm the tool exists).
+
+### 5. Failure analysis
+- For failed tasks, what went wrong? What would have fixed it?
+- Cite the specific test name or assertion that caused the failure.
+
+### 6. Concrete prompt improvements
+
+**Verification step (do this before writing any REPLACEMENT):** For each change you plan to label REPLACEMENT, copy the exact text you intend to replace and confirm it appears verbatim in the TEST_GENERATION_SYSTEM or IMPLEMENTATION_SYSTEM shown above. If you cannot find exact verbatim text, you must reclassify that change as NEW ADDITION. Do not paraphrase or reconstruct text from memory.
+
+For each change:
+1. Label it as either REPLACEMENT (modifying existing text) or NEW ADDITION (adding new content)
+2. For REPLACEMENT: quote the exact text being replaced, verbatim from the prompt inputs above. If you cannot find the exact text, convert to NEW ADDITION. Note: if the system prompts were not received (see preliminary verification), you cannot label any change REPLACEMENT — all changes must be NEW ADDITION with a note that placement is approximate.
+3. Show the full replacement or addition text.
+4. State which observed failure mode this addresses, citing the specific task and result that motivated it.
+5. If the change requires a new system capability (tool, mechanism, external resource), note that it requires implementation work beyond prompt editing.
+
+Do not recommend more than 6 changes total. Prioritize by expected impact on the failure modes observed. For each change, explicitly state what you are *not* recommending and why — at minimum, name one alternative change you considered and deprioritized, and give one sentence explaining why the chosen changes rank higher. Additionally, for any change that addresses a failure observed in only one task (out of {n} tasks), explicitly note that this is a single-task signal and explain why it still warrants a prompt-level change rather than being treated as a one-off edge case.\
+"""
+
+[judge_ab]
+template = """\
+Below are A/B test results comparing two versions of prompts for a two-phase AI coding agent.
+
+**Before proceeding**: Verify that the following variables are filled in: {v1_test_gen}, {v1_impl}, {v2_test_gen}, {v2_impl}, {max_iter}. If any appear as literal placeholder text (e.g., the string "{v1_test_gen}"), stop and report: "EVALUATION BLOCKED: prompt text was not provided. Sections 2, 3, and 6 cannot be completed accurately."
+
+**System prompt quotation artifact**: To confirm system prompt text was received, quote the first sentence of V1 TEST_GENERATION_SYSTEM here: [quote]. Quote the first sentence of V2 TEST_GENERATION_SYSTEM here: [quote]. If you cannot produce these quotes verbatim, treat the affected version's prompts as missing and block evaluation of Sections 2, 3, and 6 for that version.
+
+## Agent workflow
+1. A first LLM call generates a locked pytest test file from the task description
+2. A second LLM (with tools) iteratively writes solution.py and runs pytest until all tests pass
+3. Max {max_iter} write→run cycles allowed per task
+4. **Test revision mechanism (optional):** If the implementation agent exhausts its iterations without passing, it may be offered one chance to revise solution_test.py. A revision is accepted only if the agent can prove a specific test assertion is factually wrong using the calculator tool. Auto-approval means no human reviewed the revision. In the run.log this appears as: `[test revision offered]`, `[test revision auto-approved]`, `[test revision approved — resetting iteration counter]`.
+
+**Important for evaluation:** A task marked PASSED after a test revision may have used weakened tests. When you encounter a task with a test revision in the run.log:
+- Flag it explicitly in Section 1 as a "revision-assisted pass"
+- In Section 2, compare the original test count vs. revised test count and note any coverage reduction
+- Do NOT count a revision-assisted pass as equal quality to a clean pass when comparing versions or making verdict judgments
+- In Section 4 (system-level design), assess whether the revision was legitimate (fixing a genuinely wrong assertion) or convenience-driven (removing hard tests)
+
+## Prompt versions
+
+### V1 — TEST_GENERATION_SYSTEM:
+```
+{v1_test_gen}
+```
+
+### V1 — IMPLEMENTATION_SYSTEM:
+```
+{v1_impl}
+```
+
+### V2 — TEST_GENERATION_SYSTEM:
+```
+{v2_test_gen}
+```
+
+### V2 — IMPLEMENTATION_SYSTEM:
+```
+{v2_impl}
+```
+
+## V1 Results
+
+{v1_results_block}
+
+## V2 Results
+
+{v2_results_block}
+
+---
+
+Provide a direct A/B comparison:
+
+### 1. Pass rate comparison
+V1 vs V2 — which passed more tasks? Why?
+Report: total tasks, tasks passed per version, average iterations per version, and max iterations seen.
+For the task-number verification: list every task number cited in your evaluation (as a bullet list), then confirm each is in range. Do not summarize this as a single sentence — the per-number listing is required so a meta-evaluator can audit the check. If you cite a task number that does not appear in the results, flag it explicitly as 'TASK NUMBER OUT OF RANGE.'
+If the task results summary and per-task breakdown disagree, flag the discrepancy explicitly. If pass rates are equal, identify at least two alternative quality signals (e.g., iterations, test corrections, test validity).
+
+### 2. Test quality comparison
+Did V2 generate better tests? Cite specific examples with exact test code quoted.
+
+### 3. Implementation quality comparison
+For at least two tasks, quote specific lines of implementation code from each version. Prioritize tasks where: (a) the algorithm is non-trivial, (b) the task has a known pitfall, or (c) the task required multiple iterations. Do not select trivially correct tasks (e.g., binary search passing in one iteration) as primary examples if more complex tasks are available. Address:
+- Are there any solutions that pass tests by special-casing inputs rather than implementing the correct algorithm?
+- Are there complexity differences (e.g., O(n²) vs O(n log n))?
+- Did either version produce an implementation that is correct by luck (e.g., passes due to a bug in the test rather than correct logic)?
+
+For complexity analysis: if the task set contains any function that selects k elements from n elements, searches a sorted structure, or performs graph traversal, explicitly check whether the implementation uses the optimal complexity class for that operation. Do not limit complexity analysis to the two tasks selected for code quotation — flag any O(n²) or O(n log n) solution where O(n log k) or O(n) exists, even if no code is quoted.
+
+If both versions are equivalent, state this explicitly and explain how you verified it.
+
+### 4. Iteration efficiency
+Which version needed fewer retries? Why?
+
+### 4b. System-level design observations
+Identify any results attributable to the agent system architecture rather than prompt quality (e.g., fallback mechanisms, tool availability, iteration caps). For each:
+- Describe the mechanism
+- How many tasks did it affect in each version?
+- Is it masking prompt quality differences or genuinely improving outcomes?
+- Should it be changed in V3, or left as-is?
+
+For each mechanism identified: if you cannot find the mechanism explicitly described in the system prompts or results block, label it 'INFERRED MECHANISM' and describe the evidence that led you to infer it. Do not assert that a mechanism exists based on its absence from logs.
+
+### 5. Verdict
+Is V2 a clear improvement? Which changes had the most impact? Which had little or no effect?
+
+### 6. Next iteration — prompt improvements for V3
+
+**Verification step (do this before writing any REPLACEMENT):** For each change you plan to label REPLACEMENT, copy the exact text you intend to replace and confirm it appears verbatim in the V1 or V2 prompts shown above. If you cannot find exact verbatim text, you must reclassify that change as NEW ADDITION. Note: if a version's system prompts were not received (see preliminary verification), you cannot label any change REPLACEMENT for that version's text — all such changes must be NEW ADDITION with a note that placement is approximate.
+
+For each change:
+1. Label it as either REPLACEMENT (modifying existing text) or NEW ADDITION (adding new content)
+2. For REPLACEMENT: quote the exact text being replaced, verbatim from the prompt inputs above. If you cannot find the exact text, convert to NEW ADDITION.
+3. Show the full replacement or addition text.
+4. State which observed failure mode this addresses, citing the specific task and result that motivated it.
+5. If the change requires a new system capability (tool, mechanism, external resource), note that it requires implementation work beyond prompt editing.
+
+Do not recommend more than 6 changes total. Prioritize by expected impact on the failure modes observed. For each change, explicitly state what you are *not* recommending and why — at minimum, name one alternative change you considered and deprioritized, and give one sentence explaining why the chosen changes rank higher. Additionally, for any change that addresses a failure observed in only one task (out of the total tasks run), explicitly note that this is a single-task signal and explain why it still warrants a prompt-level change rather than being treated as a one-off edge case.\
+"""
+
+[prompt_optimizer]
+system = """\
+You are an expert prompt engineer. Output ONLY a valid TOML file — no explanation, \
+no markdown fences, no commentary. Preserve the exact TOML structure: version field, \
+[test_generation] with system/user keys, [implementation] with system/user keys, \
+[prompt_md_section] with template key, [test_revision] with user key. \
+Apply only the changes from the judge's recommendations that are labeled REPLACEMENT or \
+NEW ADDITION. Do not invent changes beyond what the judge identified. \
+Apply the judge's recommendations to improve test generation and implementation prompts.\
+"""
+
+[meta_judge]
+system = """\
+You are an expert in LLM evaluation methodology. You evaluate the quality of AI judges — \
+systems that assess other AI outputs. You are direct, critical, and concrete. \
+You output structured markdown. You do not repeat the inputs back to yourself.
+
+Critical constraints:
+- You may only quote text that appears verbatim in the inputs provided to you. Never fabricate prompt text, tool names, or system capabilities.
+- If a template variable appears unfilled (e.g., {variable_name}), explicitly flag it as missing data rather than inferring its content.
+- Distinguish between OBSERVED (directly visible in the provided data) and INFERRED (your reasoning about likely behavior). Label claims accordingly.\
+"""
+
+template = """\
+You are reviewing the output of a judge that evaluated an AI coding agent.
+
+## Judge system prompt used
+```
+{judge_system}
+```
+
+## Judge template used
+```
+{judge_template}
+```
+
+## Task results summary (what the judge saw)
+- Tasks run: {n_tasks}
+- Passed: {n_passed}
+- Failed: {n_failed}
+- Avg iterations: {avg_iter:.1f}
+
+## Judge output to evaluate
+{judgment_text}
+
+---
+
+Evaluate the judge's output on these dimensions:
+
+### 1. Coverage
+Did the judge address every section in the template? List any sections it skipped or gave only superficial treatment.
+
+### 2. Specificity
+Did the judge cite specific tasks, test names, or code patterns? Or did it make vague claims?
+Quote examples of both good and weak specificity.
+
+### 3. Actionability of prompt improvements
+For each prompt improvement the judge recommended:
+- Is the "exact current text" actually quoted correctly from the prompts shown?
+- Is the replacement concrete and unambiguous, or just a general direction?
+- Rate each: CONCRETE / VAGUE / UNVERIFIABLE (prompt text was not provided to the judge)
+
+### 4. Calibration
+Does the severity of the judge's critique match what the task results imply?
+
+Calibration guidance:
+- 9–10/N pass rate, ≤1.5 avg iterations: Strong result. Critique should focus on hardening opportunities. Do not catastrophise.
+- 6–8/N pass rate, ≤3 avg iterations: Mixed result. Identify patterns in failures and root causes.
+- <6/N pass rate or >4 avg iterations: Poor result. Be frank about systemic failure modes.
+
+Scale criticism severity to match actual outcomes. A near-perfect pass rate warrants improvement suggestions, not alarm.
+
+### 5. Structural weaknesses in the judge prompt
+Based on this output, what is wrong or missing in the judge system prompt or template
+that led to weak coverage, vague feedback, or miscalibration? Be specific.
+
+### 6. Recommended improvements to the judge prompts
+For each change:
+1. Label it as either REPLACEMENT (modifying existing text) or NEW ADDITION
+2. For REPLACEMENT: quote the exact text verbatim from the judge system prompt or template shown above
+3. Show the full replacement or addition text
+4. State which observed judge failure this addresses
+
+Do not recommend more than 6 changes. Focus on highest-leverage fixes.\
+"""
