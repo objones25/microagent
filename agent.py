@@ -616,7 +616,6 @@ class AgentLoop:
             if isinstance(sent, str) and sent:
                 hint = sent
 
-        self._logger.info("Starting implementation loop...")
         yield {"type": "phase", "phase": "implementation"}
         yield from self._implementation_gen(user_prompt, test_content, hint=hint)
 
