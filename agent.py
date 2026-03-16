@@ -265,6 +265,7 @@ class AgentLoop:
                         "message": message,
                         "failure_reason": self.metrics.failure_reason,
                         "failure_category": self.metrics.failure_category,
+                        "solution": self._read_solution(),
                     }
                     return
                 continue
@@ -279,6 +280,7 @@ class AgentLoop:
                     "message": message,
                     "failure_reason": self.metrics.failure_reason,
                     "failure_category": self.metrics.failure_category,
+                    "solution": self._read_solution(),
                 }
                 return
 
@@ -300,7 +302,13 @@ class AgentLoop:
             "message": message,
             "failure_reason": self.metrics.failure_reason,
             "failure_category": self.metrics.failure_category,
+            "solution": self._read_solution(),
         }
+
+    def _read_solution(self) -> str:
+        """Return the contents of solution.py, or '' if it doesn't exist yet."""
+        p = self.task_dir / "solution.py"
+        return p.read_text() if p.exists() else ""
 
     def run_implementation_loop(self, user_prompt: str, test_content: str, hint: str = "") -> tuple[bool, str]:
         """Sync wrapper — drives _implementation_gen and returns the terminal (success, msg)."""
@@ -598,7 +606,8 @@ class AgentLoop:
           {"type": "tool_call", "tool": str, ...}         # one per tool call
           {"type": "coverage", "pct": float}              # only on success with coverage > 0
           {"type": "done", "success": bool, "message": str,
-           "failure_reason": str, "failure_category": str}
+           "failure_reason": str, "failure_category": str,
+           "solution": str}                              # contents of solution.py ('' if none)
 
         For CLI use: when auto_approve=False, send a hint string via generator.send() in
         response to the "awaiting_approval" event to inject it into the implementation prompt.

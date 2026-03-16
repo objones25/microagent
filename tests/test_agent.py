@@ -887,7 +887,7 @@ class TestPromptTestRevisionApproval:
 
 def _done_event(success: bool, message: str = "") -> dict:
     return {"type": "done", "success": success, "message": message,
-            "failure_reason": "", "failure_category": ""}
+            "failure_reason": "", "failure_category": "", "solution": ""}
 
 
 class TestAgentLoopRun:
