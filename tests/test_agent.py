@@ -257,14 +257,15 @@ class TestLlmCallStreaming:
         assert text_events[0]["text"] == "think"
 
     def test_write_line_emitted(self, tmp_task_dir, mock_client):
+        # partial_json events are incremental deltas that we accumulate ourselves
         resp = make_response([make_text_block("")], stop_reason="end_turn")
-        snapshot1 = '{"path": "sol.py", "content": "def foo():\\n    pass'
-        snapshot2 = '{"path": "sol.py", "content": "def foo():\\n    pass\\n"}'
         stream = self._make_stream([
             SimpleNamespace(type="content_block_start",
                             content_block=SimpleNamespace(type="tool_use", name="write_file")),
-            SimpleNamespace(type="input_json", snapshot=snapshot1),
-            SimpleNamespace(type="input_json", snapshot=snapshot2),
+            SimpleNamespace(type="input_json",
+                            partial_json='{"path": "sol.py", "content": "def foo():\\n    pass'),
+            SimpleNamespace(type="input_json",
+                            partial_json='\\n"}'),
             SimpleNamespace(type="content_block_stop"),
         ], resp)
         loop = self._make_loop(tmp_task_dir, mock_client)
@@ -283,7 +284,7 @@ class TestLlmCallStreaming:
         stream = self._make_stream([
             SimpleNamespace(type="content_block_start",
                             content_block=SimpleNamespace(type="tool_use", name="read_file")),
-            SimpleNamespace(type="input_json", snapshot='{"path": "x.py"}'),
+            SimpleNamespace(type="input_json", partial_json='{"path": "x.py"}'),
         ], resp)
         loop = self._make_loop(tmp_task_dir, mock_client)
         events = self._run(loop, stream)
@@ -295,7 +296,7 @@ class TestLlmCallStreaming:
         stream = self._make_stream([
             SimpleNamespace(type="content_block_start",
                             content_block=SimpleNamespace(type="text")),
-            SimpleNamespace(type="input_json", snapshot='{"path": "x.py"}'),
+            SimpleNamespace(type="input_json", partial_json='{"path": "x.py"}'),
         ], resp)
         loop = self._make_loop(tmp_task_dir, mock_client)
         events = self._run(loop, stream)
@@ -320,7 +321,7 @@ class TestLlmCallStreaming:
                             content_block=SimpleNamespace(type="tool_use", name="write_file")),
             SimpleNamespace(type="content_block_stop"),
             SimpleNamespace(type="input_json",
-                            snapshot='{"path": "f.py", "content": "x\\n"}'),
+                            partial_json='{"path": "f.py", "content": "x\\n"}'),
         ], resp)
         loop = self._make_loop(tmp_task_dir, mock_client)
         events = self._run(loop, stream)

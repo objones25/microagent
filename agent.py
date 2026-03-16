@@ -339,6 +339,7 @@ class AgentLoop:
         current_tool: str | None = None
         write_path: str | None = None
         write_lines_emitted: int = 0
+        write_json_accum: str = ""  # accumulated partial_json for write_file
 
         with self.client.messages.stream(
             model=self.model,
@@ -354,6 +355,7 @@ class AgentLoop:
                         current_tool = block.name
                         write_path = None
                         write_lines_emitted = 0
+                        write_json_accum = ""
                     else:
                         current_tool = None
                 elif event.type == "content_block_stop":
@@ -362,8 +364,11 @@ class AgentLoop:
                     if event.text:
                         yield {"type": "text_delta", "text": event.text}
                 elif event.type == "input_json" and current_tool == "write_file":
+                    # event.snapshot is a parsed dict — use partial_json to build
+                    # our own raw JSON accumulator for line extraction
+                    write_json_accum += event.partial_json
                     path, new_lines, write_lines_emitted = _extract_write_lines(
-                        event.snapshot, write_lines_emitted
+                        write_json_accum, write_lines_emitted
                     )
                     if path and write_path is None:
                         write_path = path
