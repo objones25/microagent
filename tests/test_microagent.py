@@ -79,6 +79,57 @@ class TestMain:
         assert "FAILED" in out
         assert "tests failed" in out
 
+    def test_render_streaming_events(self, tmp_path, monkeypatch, capsys):
+        """phase / test_generated / tool_call / coverage events all render output."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["microagent.py", "do thing", "--task-dir", str(tmp_path)]
+        )
+        events = [
+            {"type": "phase", "phase": "test_generation"},
+            {"type": "test_generated", "content": "x", "test_count": 2},
+            {"type": "phase", "phase": "implementation"},
+            {"type": "tool_call", "tool": "read_file", "path": "solution.py"},
+            {"type": "tool_call", "tool": "write_file", "path": "solution.py", "lines": 10},
+            {"type": "tool_call", "tool": "run_subprocess",
+             "command": "pytest", "passed": False,
+             "summary": "1 failed", "failing": ["test_foo"]},
+            {"type": "tool_call", "tool": "run_subprocess",
+             "command": "pytest", "passed": True,
+             "summary": "1 passed", "failing": []},
+            {"type": "tool_call", "tool": "run_python", "code": "print('hi')"},
+            {"type": "tool_call", "tool": "context7_docs",
+             "library": "pytest", "query": "fixtures"},
+            {"type": "tool_call", "tool": "firecrawl_search", "query": "python sort"},
+            {"type": "tool_call", "tool": "firecrawl_scrape", "url": "https://example.com"},
+            {"type": "tool_call", "tool": "unknown_tool"},
+            {"type": "coverage", "pct": 97.5},
+            self._done_event(True, "all good"),
+        ]
+        with patch("microagent.db.get_db", return_value=MagicMock()):
+            with patch("microagent.db.init_db"):
+                with patch("microagent.db.seed_if_empty"):
+                    with patch("microagent.anthropic.Anthropic"):
+                        with patch("microagent.AgentLoop") as MockLoop:
+                            self._mock_loop(MockLoop, events)
+                            microagent.main()
+        out = capsys.readouterr().out
+        assert "Generating tests" in out
+        assert "2 test(s)" in out
+        assert "Starting implementation" in out
+        assert "[read]" in out
+        assert "[write]" in out
+        assert "FAIL" in out
+        assert "test_foo" in out
+        assert "PASS" in out
+        assert "[py]" in out
+        assert "[docs]" in out
+        assert "[search]" in out
+        assert "[scrape]" in out
+        assert "97.5%" in out
+        assert "SUCCESS" in out
+
     def test_awaiting_approval_handled(self, tmp_path, monkeypatch, capsys):
         """awaiting_approval event shows tests, accepts hint, then waits for Enter."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")

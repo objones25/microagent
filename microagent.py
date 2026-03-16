@@ -31,6 +31,43 @@ from logger import setup_logging
 def _render_event(event: dict) -> None:
     """Render a single AgentEvent to the terminal (non-interactive events only)."""
     match event["type"]:
+        case "phase":
+            labels = {
+                "test_generation": "Generating tests...",
+                "implementation": "Starting implementation loop...",
+            }
+            print("\n" + labels.get(event["phase"], event["phase"]))
+
+        case "test_generated":
+            print(f"  Generated {event['test_count']} test(s).")
+
+        case "tool_call":
+            tool = event["tool"]
+            match tool:
+                case "read_file":
+                    print(f"  [read]  {event['path']}")
+                case "write_file":
+                    print(f"  [write] {event['path']} ({event['lines']} lines)")
+                case "run_subprocess":
+                    status = "PASS" if event["passed"] else "FAIL"
+                    print(f"  [run]   {event['command'][:60]}  →  {status}")
+                    if not event["passed"] and event.get("failing"):
+                        for fail in event["failing"][:3]:
+                            print(f"            ✗ {fail}")
+                case "run_python":
+                    print(f"  [py]    {event['code']}")
+                case "context7_docs":
+                    print(f"  [docs]  {event['library']}: {event['query']}")
+                case "firecrawl_search":
+                    print(f"  [search] {event['query']}")
+                case "firecrawl_scrape":
+                    print(f"  [scrape] {event['url']}")
+                case _:
+                    print(f"  [{tool}]")
+
+        case "coverage":
+            print(f"  Coverage: {event['pct']:.1f}%")
+
         case "done":
             print("\n" + "=" * 60)
             if event["success"]:
