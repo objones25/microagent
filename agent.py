@@ -7,13 +7,19 @@ import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import anthropic
 
 from config import DEFAULT_MODEL, DEFAULT_MAX_ITERATIONS, DEFAULT_PROMPTS_VERSION
 from logger import RunMetrics, setup_logging, save_metrics
 from tools import TOOL_SCHEMAS, dispatch_tool
+
+_RETRYABLE = (
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+    anthropic.APIConnectionError,
+)
 
 
 @dataclass
@@ -28,12 +34,6 @@ class _LoopState:
     original_test_content: Optional[str] = None  # set when revision is active
     impl_start: float = field(default_factory=time.perf_counter)
 
-_RETRYABLE = (
-    anthropic.RateLimitError,
-    anthropic.InternalServerError,
-    anthropic.APIConnectionError,
-)
-
 
 @dataclass
 class AgentConfig:
@@ -47,7 +47,7 @@ class AgentConfig:
 
 
 def load_prompts(
-    version: str = "v2.4",
+    version: str = DEFAULT_PROMPTS_VERSION,
     conn: Optional[sqlite3.Connection] = None,
     path: Optional[Path] = None,
 ) -> dict:
@@ -196,7 +196,8 @@ class AgentLoop:
     # Phase 2: iterative implementation loop
     # ------------------------------------------------------------------
 
-    def run_implementation_loop(self, user_prompt: str, test_content: str) -> tuple[bool, str]:
+    def _implementation_gen(self, user_prompt: str, test_content: str) -> Iterator[dict]:
+        """Generator that drives the implementation loop, yielding AgentEvents."""
         state = _LoopState(
             messages=[{"role": "user", "content": self._build_user_message(user_prompt, test_content)}]
         )
@@ -207,20 +208,59 @@ class AgentLoop:
             if response.stop_reason == "end_turn":
                 result = self._handle_end_turn(response, state)
                 if result is not None:
-                    return result
+                    success, message = result
+                    if self.metrics.test_coverage_pct > 0:
+                        yield {"type": "coverage", "pct": self.metrics.test_coverage_pct}
+                    yield {
+                        "type": "done",
+                        "success": success,
+                        "message": message,
+                        "failure_reason": self.metrics.failure_reason,
+                        "failure_category": self.metrics.failure_category,
+                    }
+                    return
                 continue
 
             if not tool_calls:
-                return self._fail(state, "Agent stopped requesting tools before tests passed.", "test_failure")
+                success, message = self._fail(
+                    state, "Agent stopped requesting tools before tests passed.", "test_failure"
+                )
+                yield {
+                    "type": "done",
+                    "success": success,
+                    "message": message,
+                    "failure_reason": self.metrics.failure_reason,
+                    "failure_category": self.metrics.failure_category,
+                }
+                return
 
             state.messages.append({"role": "assistant", "content": response.content})
-            state.messages.append({"role": "user", "content": self._run_tools(tool_calls, state)})
+            tool_results, events = self._run_tools(tool_calls, state)
+            yield from events
+            state.messages.append({"role": "user", "content": tool_results})
             self._maybe_apply_revision(response, state)
 
-        return self._fail(
-            state, f"Max iterations ({self.max_iterations}) reached.", "max_iterations",
+        success, message = self._fail(
+            state,
+            f"Max iterations ({self.max_iterations}) reached.",
+            "max_iterations",
             message=f"Max iterations ({self.max_iterations}) reached.\n{state.last_output}",
         )
+        yield {
+            "type": "done",
+            "success": success,
+            "message": message,
+            "failure_reason": self.metrics.failure_reason,
+            "failure_category": self.metrics.failure_category,
+        }
+
+    def run_implementation_loop(self, user_prompt: str, test_content: str) -> tuple[bool, str]:
+        """Sync wrapper — drives _implementation_gen and returns the terminal (success, msg)."""
+        result = (False, "")
+        for event in self._implementation_gen(user_prompt, test_content):
+            if event["type"] == "done":
+                result = (event["success"], event["message"])
+        return result
 
     def _build_user_message(self, user_prompt: str, test_content: str) -> str:
         prompt_md_path = self.task_dir / "solution.prompt.md"
@@ -285,12 +325,15 @@ class AgentLoop:
             message=f"Agent stopped without passing tests.\n{final_text}\n\n{state.last_output}",
         )
 
-    def _run_tools(self, tool_calls, state: _LoopState) -> list[dict]:
+    def _run_tools(self, tool_calls, state: _LoopState) -> tuple[list[dict], list[dict]]:
+        """Dispatch tool calls, returning (tool_results, agent_events)."""
         tool_results = []
+        events = []
         for tc in tool_calls:
             self.metrics.tool_calls[tc.name] = self.metrics.tool_calls.get(tc.name, 0) + 1
             result_str = dispatch_tool(tc.name, tc.input, self.task_dir)
             self._log_tool_call(tc, result_str)
+            events.append(self._make_tool_event(tc, result_str))
 
             if tc.name == "write_file":
                 self.metrics.impl_write_count += 1
@@ -304,7 +347,45 @@ class AgentLoop:
                     state.pending_write = False
 
             tool_results.append({"type": "tool_result", "tool_use_id": tc.id, "content": result_str})
-        return tool_results
+        return tool_results, events
+
+    def _make_tool_event(self, tc, result_str: str) -> dict:
+        """Build a structured AgentEvent dict for a completed tool call."""
+        inp = tc.input
+        match tc.name:
+            case "read_file":
+                return {"type": "tool_call", "tool": "read_file", "path": inp.get("path", "?")}
+            case "write_file":
+                content = inp.get("content", "")
+                lines = content.count("\n") + 1 if content else 0
+                return {"type": "tool_call", "tool": "write_file",
+                        "path": inp.get("path", "?"), "lines": lines}
+            case "run_subprocess":
+                summary, failing = _parse_pytest_result(result_str)
+                passed = _tests_passed(result_str)
+                cmd = inp.get("command", [])
+                return {"type": "tool_call", "tool": "run_subprocess",
+                        "command": " ".join(cmd) if isinstance(cmd, list) else str(cmd),
+                        "passed": passed, "summary": summary, "failing": failing[:5]}
+            case "context7_docs":
+                return {"type": "tool_call", "tool": "context7_docs",
+                        "library": inp.get("library", "?"),
+                        "query": inp.get("query", "")[:60]}
+            case "firecrawl_search":
+                return {"type": "tool_call", "tool": "firecrawl_search",
+                        "query": inp.get("query", "")[:60]}
+            case "firecrawl_scrape":
+                return {"type": "tool_call", "tool": "firecrawl_scrape",
+                        "url": inp.get("url", "?")}
+            case "run_python":
+                code = inp.get("code", "")
+                return {"type": "tool_call", "tool": "run_python",
+                        "code": code.splitlines()[0][:60] if code else "?"}
+            case "calculator":
+                return {"type": "tool_call", "tool": "calculator",
+                        "expression": inp.get("expression", "?"), "result": result_str}
+            case _:
+                return {"type": "tool_call", "tool": tc.name}
 
     def _maybe_apply_revision(self, response, state: _LoopState) -> None:
         if state.original_test_content is None:
@@ -411,30 +492,33 @@ class AgentLoop:
     # Orchestrator
     # ------------------------------------------------------------------
 
-    def run(self, user_prompt: str, auto_approve: bool = False) -> None:
+    def run(self, user_prompt: str, auto_approve: bool = False) -> Iterator[dict]:
+        """Run the agent, yielding structured AgentEvent dicts.
+
+        Event types emitted in order:
+          {"type": "phase", "phase": "test_generation"}
+          {"type": "test_generated", "content": str, "test_count": int}
+          {"type": "awaiting_approval", "content": str}   # only when auto_approve=False
+          {"type": "phase", "phase": "implementation"}
+          {"type": "tool_call", "tool": str, ...}         # one per tool call
+          {"type": "coverage", "pct": float}              # only on success with coverage > 0
+          {"type": "done", "success": bool, "message": str,
+           "failure_reason": str, "failure_category": str}
+        """
         self.task_dir.mkdir(parents=True, exist_ok=True)
 
-        # Phase 1
+        yield {"type": "phase", "phase": "test_generation"}
         test_content = self.generate_tests(user_prompt)
+        yield {"type": "test_generated", "content": test_content,
+               "test_count": test_content.count("def test_")}
 
-        # Show tests, optionally wait for approval
-        print("\n" + "=" * 60)
-        print("GENERATED TESTS (solution_test.py):")
-        print("=" * 60)
-        print(test_content)
-        print("=" * 60)
         if not auto_approve:
-            try:
-                input("\nPress Enter to start implementation, or Ctrl+C to abort...\n")
-            except KeyboardInterrupt:
-                print("\nAborted.")
-                sys.exit(0)
+            yield {"type": "awaiting_approval", "content": test_content}
 
-        # Phase 2
         self._logger.info("Starting implementation loop...")
-        success, message = self.run_implementation_loop(user_prompt, test_content)
+        yield {"type": "phase", "phase": "implementation"}
+        yield from self._implementation_gen(user_prompt, test_content)
 
-        # Save metrics
         save_metrics(self.metrics, self.task_dir, conn=self._db_conn)
         total_in = self.metrics.test_gen_input_tokens + self.metrics.impl_input_tokens
         total_out = self.metrics.test_gen_output_tokens + self.metrics.impl_output_tokens
@@ -454,14 +538,6 @@ class AgentLoop:
             f"{self.metrics.total_duration_s:.1f}s total, "
             f"failure_category={self.metrics.failure_category!r}"
         )
-
-        print("\n" + "=" * 60)
-        if success:
-            print("SUCCESS — all tests passed!")
-        else:
-            print("FAILED — could not pass all tests.")
-        print("=" * 60)
-        print(message)
 
 
 # ------------------------------------------------------------------

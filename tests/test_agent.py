@@ -459,6 +459,12 @@ class TestRunImplementationLoopToolLogging:
         loop, _ = self._run_single_tool(tmp_task_dir, mock_client, tb, dispatch_return="4")
         assert loop.metrics.tool_calls.get("calculator", 0) == 1
 
+    def test_unknown_tool_fallback(self, tmp_task_dir, mock_client):
+        """Unknown tool name hits the case _ fallback in _make_tool_event."""
+        tb = make_tool_block("mystery_tool", {"foo": "bar"})
+        loop, _ = self._run_single_tool(tmp_task_dir, mock_client, tb)
+        assert loop.metrics.tool_calls.get("mystery_tool", 0) == 1
+
 
 # ---------------------------------------------------------------------------
 # AgentLoop.run_implementation_loop — iteration counter logic
@@ -694,64 +700,63 @@ class TestPromptTestRevisionApproval:
 
 
 # ---------------------------------------------------------------------------
-# AgentLoop.run (orchestrator)
+# AgentLoop.run (orchestrator) — generator interface
 # ---------------------------------------------------------------------------
 
+def _done_event(success: bool, message: str = "") -> dict:
+    return {"type": "done", "success": success, "message": message,
+            "failure_reason": "", "failure_category": ""}
+
+
 class TestAgentLoopRun:
-    def _mock_generate_and_impl(self, mock_client, success=True):
-        mock_client.messages.create.return_value = make_response(
-            [make_text_block("def test_foo(): pass")], stop_reason="end_turn"
-        )
-
-    def test_auto_approve_success(self, tmp_task_dir, mock_client, capsys):
-        loop = AgentLoop(
+    def _make_loop(self, tmp_task_dir, mock_client):
+        return AgentLoop(
             client=mock_client,
             task_dir=tmp_task_dir,
             prompts=MINIMAL_PROMPTS,
             logger=MagicMock(),
         )
+
+    def test_auto_approve_success(self, tmp_task_dir, mock_client):
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        loop.metrics.api_retries = 2  # exercises the api_retries log branch in run()
         with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
-            with patch.object(loop, "run_implementation_loop", return_value=(True, "all passed")):
-                loop.run("task", auto_approve=True)
-        out = capsys.readouterr().out
-        assert "SUCCESS" in out
+            with patch.object(loop, "_implementation_gen",
+                              return_value=iter([_done_event(True, "all passed")])):
+                events = list(loop.run("task", auto_approve=True))
+        done = next(e for e in events if e["type"] == "done")
+        assert done["success"] is True
+        # no awaiting_approval event when auto_approve=True
+        assert not any(e["type"] == "awaiting_approval" for e in events)
 
-    def test_auto_approve_failure(self, tmp_task_dir, mock_client, capsys):
-        loop = AgentLoop(
-            client=mock_client,
-            task_dir=tmp_task_dir,
-            prompts=MINIMAL_PROMPTS,
-            logger=MagicMock(),
-        )
+    def test_auto_approve_failure(self, tmp_task_dir, mock_client):
+        loop = self._make_loop(tmp_task_dir, mock_client)
         with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
-            with patch.object(loop, "run_implementation_loop", return_value=(False, "failed")):
-                loop.run("task", auto_approve=True)
-        out = capsys.readouterr().out
-        assert "FAILED" in out
+            with patch.object(loop, "_implementation_gen",
+                              return_value=iter([_done_event(False, "failed")])):
+                events = list(loop.run("task", auto_approve=True))
+        done = next(e for e in events if e["type"] == "done")
+        assert done["success"] is False
 
-    def test_manual_approve_enter(self, tmp_task_dir, mock_client):
-        loop = AgentLoop(
-            client=mock_client,
-            task_dir=tmp_task_dir,
-            prompts=MINIMAL_PROMPTS,
-            logger=MagicMock(),
-        )
-        with patch.object(loop, "generate_tests", return_value="tests"):
-            with patch.object(loop, "run_implementation_loop", return_value=(True, "ok")):
-                with patch("builtins.input", return_value=""):
-                    loop.run("task", auto_approve=False)
+    def test_awaiting_approval_emitted_when_not_auto(self, tmp_task_dir, mock_client):
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
+            with patch.object(loop, "_implementation_gen",
+                              return_value=iter([_done_event(True)])):
+                events = list(loop.run("task", auto_approve=False))
+        types = [e["type"] for e in events]
+        assert "awaiting_approval" in types
+        assert events[types.index("awaiting_approval")]["content"] == "def test_foo(): pass"
 
-    def test_keyboard_interrupt_on_input(self, tmp_task_dir, mock_client):
-        loop = AgentLoop(
-            client=mock_client,
-            task_dir=tmp_task_dir,
-            prompts=MINIMAL_PROMPTS,
-            logger=MagicMock(),
-        )
-        with patch.object(loop, "generate_tests", return_value="tests"):
-            with patch("builtins.input", side_effect=KeyboardInterrupt):
-                with pytest.raises(SystemExit):
-                    loop.run("task", auto_approve=False)
+    def test_phase_events_in_order(self, tmp_task_dir, mock_client):
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
+            with patch.object(loop, "_implementation_gen",
+                              return_value=iter([_done_event(True)])):
+                events = list(loop.run("task", auto_approve=True))
+        phase_events = [e for e in events if e["type"] == "phase"]
+        assert phase_events[0]["phase"] == "test_generation"
+        assert phase_events[1]["phase"] == "implementation"
 
 
 # ---------------------------------------------------------------------------

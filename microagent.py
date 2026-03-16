@@ -28,6 +28,20 @@ from config import DEFAULT_MODEL, DEFAULT_PROMPTS_VERSION, DEFAULT_MAX_ITERATION
 from logger import setup_logging
 
 
+def _render_event(event: dict) -> None:
+    """Render a single AgentEvent to the terminal (non-interactive events only)."""
+    match event["type"]:
+        case "done":
+            print("\n" + "=" * 60)
+            if event["success"]:
+                print("SUCCESS — all tests passed!")
+            else:
+                print("FAILED — could not pass all tests.")
+            print("=" * 60)
+            if event.get("message"):
+                print(event["message"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Test-first AI coding agent powered by Claude"
@@ -119,7 +133,20 @@ def main() -> None:
     )
 
     try:
-        loop.run(args.prompt)
+        for event in loop.run(args.prompt):
+            if event["type"] == "awaiting_approval":
+                print("\n" + "=" * 60)
+                print("GENERATED TESTS (solution_test.py):")
+                print("=" * 60)
+                print(event["content"])
+                print("=" * 60)
+                try:
+                    input("\nPress Enter to start implementation, or Ctrl+C to abort...\n")
+                except KeyboardInterrupt:
+                    print("\nAborted.")
+                    sys.exit(0)
+            else:
+                _render_event(event)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(0)

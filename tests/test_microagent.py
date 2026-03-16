@@ -27,6 +27,16 @@ class TestMain:
             microagent.main()
         assert exc.value.code == 1
 
+    def _done_event(self, success=True, message=""):
+        return {"type": "done", "success": success, "message": message,
+                "failure_reason": "", "failure_category": ""}
+
+    def _mock_loop(self, MockLoop, events):
+        instance = MagicMock()
+        instance.run.return_value = iter(events)
+        MockLoop.return_value = instance
+        return instance
+
     def test_basic_run(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr(
@@ -38,10 +48,74 @@ class TestMain:
                 with patch("microagent.db.seed_if_empty"):
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
-                            instance = MagicMock()
-                            MockLoop.return_value = instance
+                            instance = self._mock_loop(
+                                MockLoop, [self._done_event(True, "3 passed")]
+                            )
                             microagent.main()
         instance.run.assert_called_once_with("write a function")
+        out = capsys.readouterr().out
+        assert "SUCCESS" in out
+
+    def test_render_failure_event(self, tmp_path, monkeypatch, capsys):
+        """_render_event covers FAILED branch and message print."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["microagent.py", "do thing", "--task-dir", str(tmp_path)]
+        )
+        with patch("microagent.db.get_db", return_value=MagicMock()):
+            with patch("microagent.db.init_db"):
+                with patch("microagent.db.seed_if_empty"):
+                    with patch("microagent.anthropic.Anthropic"):
+                        with patch("microagent.AgentLoop") as MockLoop:
+                            self._mock_loop(
+                                MockLoop, [self._done_event(False, "tests failed")]
+                            )
+                            microagent.main()
+        out = capsys.readouterr().out
+        assert "FAILED" in out
+        assert "tests failed" in out
+
+    def test_awaiting_approval_handled(self, tmp_path, monkeypatch, capsys):
+        """awaiting_approval event shows tests and waits for Enter."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["microagent.py", "do thing", "--task-dir", str(tmp_path)]
+        )
+        events = [
+            {"type": "awaiting_approval", "content": "def test_x(): pass"},
+            self._done_event(True),
+        ]
+        with patch("microagent.db.get_db", return_value=MagicMock()):
+            with patch("microagent.db.init_db"):
+                with patch("microagent.db.seed_if_empty"):
+                    with patch("microagent.anthropic.Anthropic"):
+                        with patch("microagent.AgentLoop") as MockLoop:
+                            self._mock_loop(MockLoop, events)
+                            with patch("builtins.input", return_value=""):
+                                microagent.main()
+        out = capsys.readouterr().out
+        assert "GENERATED TESTS" in out
+        assert "def test_x(): pass" in out
+
+    def test_awaiting_approval_keyboard_interrupt(self, tmp_path, monkeypatch):
+        """KI during the awaiting_approval input prompt aborts cleanly."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["microagent.py", "do thing", "--task-dir", str(tmp_path)]
+        )
+        events = [{"type": "awaiting_approval", "content": "tests"}]
+        with patch("microagent.db.get_db", return_value=MagicMock()):
+            with patch("microagent.db.init_db"):
+                with patch("microagent.db.seed_if_empty"):
+                    with patch("microagent.anthropic.Anthropic"):
+                        with patch("microagent.AgentLoop") as MockLoop:
+                            self._mock_loop(MockLoop, events)
+                            with patch("builtins.input", side_effect=KeyboardInterrupt):
+                                with pytest.raises(SystemExit):
+                                    microagent.main()
 
     def test_default_task_dir_created(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
