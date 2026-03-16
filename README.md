@@ -36,6 +36,83 @@ FIRECRAWL_API_KEY=fc-...       # optional — needed for web search/scrape tools
 CONTEXT7_API_KEY=...           # optional — needed for library docs tool
 ```
 
+---
+
+## API server
+
+`api.py` exposes the agent as a streaming WebSocket API backed by FastAPI, so it can be called from a web application.
+
+### Start the server
+
+```bash
+uv run uvicorn api:app --reload        # development
+uvicorn api:app --host 0.0.0.0 --port 8000   # production
+```
+
+Or with Docker:
+
+```bash
+docker build -t microagent-api .
+docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8000:8000 microagent-api
+```
+
+### REST endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Returns `{"status": "ok"}` — Docker healthcheck |
+| `GET /config/defaults` | Returns `model`, `max_iterations`, `prompts_version` defaults |
+
+### WebSocket — `ws://localhost:8000/ws/run`
+
+**Start a run** (client → server, once):
+```json
+{
+  "prompt": "Write a function that computes fibonacci numbers",
+  "config": {
+    "model": "claude-sonnet-4-6",
+    "max_iterations": 10,
+    "prompts_version": "v2.8",
+    "allow_test_revision": false,
+    "auto_approve_revision": false,
+    "min_coverage": 0.0
+  }
+}
+```
+All `config` fields are optional and fall back to the server defaults.
+
+**Streaming events** (server → client):
+```
+{"type": "phase",            "phase": "test_generation"|"implementation"}
+{"type": "test_generated",   "content": "...", "test_count": 12}
+{"type": "text_delta",       "text": "..."}
+{"type": "write_line",       "path": "solution.py", "line": "def f():", "line_num": 1}
+{"type": "tool_call",        "tool": "run_subprocess", "passed": true, "summary": "..."}
+{"type": "coverage",         "pct": 98.5}
+{"type": "awaiting_approval","content": "<test file contents>"}
+{"type": "done",             "success": true, "message": "...", "solution": "..."}
+{"type": "error",            "message": "..."}
+```
+
+**Approval/hint flow** — when `allow_test_revision` is enabled and the agent proposes revised tests, the server pauses and sends `awaiting_approval`. The client responds before streaming resumes:
+```json
+{"type": "hint", "hint": "use a heap"}
+```
+Send `null` for no hint.
+
+### Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
+| `FIRECRAWL_API_KEY` | No | Enables web search/scrape tools |
+| `CORS_ORIGINS` | No | Comma-separated allowed origins (default `*`) |
+| `DEFAULT_MODEL` | No | Override default model |
+| `DEFAULT_MAX_ITERATIONS` | No | Override default max iterations |
+| `DEFAULT_PROMPTS_VERSION` | No | Override default prompts version |
+
+---
+
 The database (`microagent.db`) is created automatically on first run and seeded with all prompt versions and 100 tasks.
 
 ## Usage
@@ -182,11 +259,13 @@ The DB is seeded on first run from `prompts/*.toml` (prompt versions) and `evals
 ```
 microagent/
 ├── agent.py          # AgentLoop + AgentConfig: test generation + implementation loop + metrics
+├── api.py            # FastAPI WebSocket + REST API server
 ├── db.py             # SQLite schema, seed, CRUD layer + Task dataclass
 ├── eval.py           # Evaluation harness: task suite, judge, A/B comparison, meta-judge
 ├── logger.py         # RunMetrics dataclass, setup_logging(), save_metrics()
 ├── microagent.py     # CLI entry point
 ├── tools.py          # Tool schemas + implementations (read, write, pytest, docs, search, run_python, calc)
+├── Dockerfile        # Multi-stage production container (uv builder → slim runtime)
 ├── evals/
 │   ├── tasks.txt     # Task pool — 100 tasks across easy/standard/hard tiers
 │   ├── tasks-v1.txt  # Legacy task list (v1, 10 tasks)
@@ -210,6 +289,7 @@ microagent/
 └── tests/
     ├── conftest.py   # Shared fixtures and mock helpers
     ├── test_agent.py
+    ├── test_api.py
     ├── test_eval.py
     └── test_microagent.py
 ```
@@ -316,7 +396,7 @@ uv run pytest -q            # quiet output
 uv run pytest tests/test_agent.py   # single file
 ```
 
-Coverage is enforced at 98% (`--cov-fail-under=98`). Current coverage: **98.5%** across `agent.py`, `eval.py`, and `microagent.py`.
+Coverage is enforced at 98% (`--cov-fail-under=98`). Current coverage: **98.6%** across `agent.py`, `api.py`, `eval.py`, and `microagent.py`.
 
 ---
 

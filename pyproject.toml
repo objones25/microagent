@@ -5,19 +5,29 @@ description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.84.0",
+    "fastapi>=0.115.0",
     "firecrawl-py>=4.18.1",
+    "matplotlib>=3.10.0",
+    "networkx>=3.4.0",
+    "numpy>=2.0.0",
+    "pandas>=2.2.0",
     "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
     "python-dotenv>=1.2.2",
+    "scikit-learn>=1.6.0",
+    "scipy>=1.15.0",
+    "sympy>=1.13.0",
+    "uvicorn[standard]>=0.34.0",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest-cov>=7.0.0",
+    "websockets>=16.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=agent --cov=eval --cov=microagent --cov-report=term-missing --cov-fail-under=98"
+addopts = "--cov=agent --cov=api --cov=eval --cov=microagent --cov-report=term-missing --cov-fail-under=98"
 
 [tool.coverage.run]
 omit = ["tests/*", ".venv/*"]
