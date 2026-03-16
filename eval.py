@@ -292,8 +292,8 @@ def run_suite(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate microagent on a suite of coding tasks")
-    parser.add_argument("--prompts", default="v2.7", metavar="VERSION",
-                        help="Agent prompts version to use (default: v2.7)")
+    parser.add_argument("--prompts", default="v2.8", metavar="VERSION",
+                        help="Agent prompts version to use (default: v2.8)")
     parser.add_argument("--compare", default=None, metavar="VERSION",
                         help="Second agent prompts version to A/B test against --prompts")
     parser.add_argument("--tasks", type=int, default=10,

@@ -51,7 +51,7 @@ uv run python microagent.py "Write RLE encode/decode" --allow-test-revision
 | `--task-dir`              | `task-YYYYMMDD-HHMMSS/` | Directory for task files                                                       |
 | `--model`                 | `claude-sonnet-4-6`     | Claude model to use                                                            |
 | `--max-iterations`        | `10`                    | Max write→run cycles before giving up                                          |
-| `--prompts`               | `v2.7`                  | Agent prompts version (key in `microagent.db`, seeded from `prompts/<v>.toml`) |
+| `--prompts`               | `v2.8`                  | Agent prompts version (key in `microagent.db`, seeded from `prompts/<v>.toml`) |
 | `--allow-test-revision`   | off                     | When the agent stops without passing, offer it a chance to revise the tests    |
 | `--auto-approve-revision` | off                     | Automatically approve test revisions without prompting                         |
 
@@ -106,7 +106,7 @@ Tasks are randomly sampled from the DB pool (100 tasks across easy/standard/hard
 
 | Flag                      | Default   | Description                                                          |
 | ------------------------- | --------- | -------------------------------------------------------------------- |
-| `--prompts`               | `v2.7`    | Agent prompts version to evaluate                                    |
+| `--prompts`               | `v2.8`    | Agent prompts version to evaluate                                    |
 | `--compare`               | —         | Second prompts version for A/B test                                  |
 | `--tasks`                 | `10`      | Number of tasks to randomly sample from DB                           |
 | `--max-iter`              | `5`       | Max implementation iterations per task                               |
@@ -179,7 +179,8 @@ microagent/
 │   ├── v2.4.toml     # Agent prompts v2.4
 │   ├── v2.5.toml     # Agent prompts v2.5
 │   ├── v2.6.toml     # Agent prompts v2.6
-│   ├── v2.7.toml     # Agent prompts v2.7 (current best)
+│   ├── v2.7.toml     # Agent prompts v2.7
+│   ├── v2.8.toml     # Agent prompts v2.8 (current best)
 │   ├── eval-v1.toml  # Eval prompts v1
 │   ├── eval-v1.1.toml # Eval prompts v1.1
 │   ├── eval-v1.2.toml # Eval prompts v1.2
@@ -229,6 +230,7 @@ uv run python eval.py --compare v3     # A/B test v2.7 vs v3
 | `v2.5`  | Complexity guard tests for tasks with specified O-complexity; strengthened general DP cross-check (restored from stock-trading-specific narrowing); stricter palindrome membership brute-force rule with index-position verification |
 | `v2.6`  | Best-of-breed from v2.5 + auto-optimized variants: bare `try/except: pass` prohibition extended to all nesting levels; `time.sleep`-based thread pool tests explicitly forbidden when a future/result blocking interface is available; palindrome substring membership requires index enumeration; restored general DP cross-check rule |
 | `v2.7`  | Agent forbidden from requesting test modification; complexity guard n-values calibrated per complexity class (100k/10k/50k); `or`-prohibition extended to set-membership assertions and search return values; segment-tree loser-propagation adversarial test required; implementation must declare complexity class in comment before writing code |
+| `v2.8`  | `or`-prohibition extended to tuple-valued returns with implementation-defined elements; bare-pass prohibition extended to "empty state" and "optional feature" patterns (`assert result == expected or result is None` banned); mandatory zero/boundary parameter tests made explicit standalone rule; loop-variable assertion prohibition (iterating result without asserting is forbidden); token budget safety rule: output validity gate requires syntactically complete last function |
 
 ### Eval prompts
 

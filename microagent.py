@@ -50,9 +50,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--prompts",
-        default="v2.7",
+        default="v2.8",
         metavar="VERSION",
-        help="Prompts version to load from prompts/<VERSION>.toml (default: v2.7)",
+        help="Prompts version to load from prompts/<VERSION>.toml (default: v2.8)",
     )
     parser.add_argument(
         "--allow-test-revision",
