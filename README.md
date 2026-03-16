@@ -2,6 +2,12 @@
 
 A test-first AI coding agent powered by Claude. Given a task description, it generates a locked pytest test file, then iteratively writes and debugs an implementation until all tests pass.
 
+## Inspiration
+
+This project is my take on [Steve Sewell's (Builder.io) microagent](https://www.youtube.com/watch?v=C3uI06xOGSE) — a concept born from frustration with AI tools that generate code and leave debugging as your problem. Steve's insight: instead of turning prompts directly into code, first turn them into tests, then iterate on code until the tests pass. The AI can't declare victory until something actually verifiable is true.
+
+His implementation ships as an npm package. This is a Python / Claude reimagining of the same idea, extended with an evaluation harness, prompt versioning, judge-based optimization, and streaming output.
+
 ## How it works
 
 ```
