@@ -32,8 +32,11 @@ class TestMain:
                 "failure_reason": "", "failure_category": ""}
 
     def _mock_loop(self, MockLoop, events):
+        def _gen():
+            for event in events:
+                yield event
         instance = MagicMock()
-        instance.run.return_value = iter(events)
+        instance.run.return_value = _gen()
         MockLoop.return_value = instance
         return instance
 
@@ -77,7 +80,7 @@ class TestMain:
         assert "tests failed" in out
 
     def test_awaiting_approval_handled(self, tmp_path, monkeypatch, capsys):
-        """awaiting_approval event shows tests and waits for Enter."""
+        """awaiting_approval event shows tests, accepts hint, then waits for Enter."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr(
             sys, "argv",
@@ -93,14 +96,15 @@ class TestMain:
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
                             self._mock_loop(MockLoop, events)
-                            with patch("builtins.input", return_value=""):
+                            # two input() calls: hint prompt, then Enter to start
+                            with patch("builtins.input", side_effect=["use a heap", ""]):
                                 microagent.main()
         out = capsys.readouterr().out
         assert "GENERATED TESTS" in out
         assert "def test_x(): pass" in out
 
     def test_awaiting_approval_keyboard_interrupt(self, tmp_path, monkeypatch):
-        """KI during the awaiting_approval input prompt aborts cleanly."""
+        """KI during the hint prompt aborts cleanly."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr(
             sys, "argv",
@@ -113,6 +117,7 @@ class TestMain:
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
                             self._mock_loop(MockLoop, events)
+                            # KI on the first input() (hint prompt)
                             with patch("builtins.input", side_effect=KeyboardInterrupt):
                                 with pytest.raises(SystemExit):
                                     microagent.main()
@@ -126,7 +131,7 @@ class TestMain:
                 with patch("microagent.db.seed_if_empty"):
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
-                            MockLoop.return_value = MagicMock()
+                            self._mock_loop(MockLoop, [])
                             microagent.main()
         # A task-YYYYMMDD-HHMMSS dir should have been created
         created = [d for d in tmp_path.iterdir() if d.name.startswith("task-")]
@@ -142,7 +147,7 @@ class TestMain:
                 with patch("microagent.db.seed_if_empty"):
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
-                            MockLoop.return_value = MagicMock()
+                            self._mock_loop(MockLoop, [])
                             microagent.main()
         task_dirs = [d for d in tmp_path.iterdir() if d.name.startswith("task-")]
         assert len(task_dirs) == 1
@@ -160,7 +165,7 @@ class TestMain:
                 with patch("microagent.db.seed_if_empty"):
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
-                            MockLoop.return_value = MagicMock()
+                            self._mock_loop(MockLoop, [])
                             microagent.main()
         _, kwargs = MockLoop.call_args
         assert kwargs["config"].allow_test_revision is True
@@ -178,7 +183,7 @@ class TestMain:
                 with patch("microagent.db.seed_if_empty"):
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
-                            MockLoop.return_value = MagicMock()
+                            self._mock_loop(MockLoop, [])
                             microagent.main()
         _, kwargs = MockLoop.call_args
         assert kwargs["db_conn"] is fake_conn
@@ -195,7 +200,7 @@ class TestMain:
                 with patch("microagent.db.seed_if_empty"):
                     with patch("microagent.anthropic.Anthropic"):
                         with patch("microagent.AgentLoop") as MockLoop:
-                            MockLoop.return_value = MagicMock()
+                            self._mock_loop(MockLoop, [])
                             microagent.main()
         _, kwargs = MockLoop.call_args
         assert kwargs["config"].model == "claude-opus-4-6"

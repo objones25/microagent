@@ -196,10 +196,10 @@ class AgentLoop:
     # Phase 2: iterative implementation loop
     # ------------------------------------------------------------------
 
-    def _implementation_gen(self, user_prompt: str, test_content: str) -> Iterator[dict]:
+    def _implementation_gen(self, user_prompt: str, test_content: str, hint: str = "") -> Iterator[dict]:
         """Generator that drives the implementation loop, yielding AgentEvents."""
         state = _LoopState(
-            messages=[{"role": "user", "content": self._build_user_message(user_prompt, test_content)}]
+            messages=[{"role": "user", "content": self._build_user_message(user_prompt, test_content, hint)}]
         )
         while state.iteration < self.max_iterations:
             response = self._llm_call(state)
@@ -254,26 +254,29 @@ class AgentLoop:
             "failure_category": self.metrics.failure_category,
         }
 
-    def run_implementation_loop(self, user_prompt: str, test_content: str) -> tuple[bool, str]:
+    def run_implementation_loop(self, user_prompt: str, test_content: str, hint: str = "") -> tuple[bool, str]:
         """Sync wrapper — drives _implementation_gen and returns the terminal (success, msg)."""
         result = (False, "")
-        for event in self._implementation_gen(user_prompt, test_content):
+        for event in self._implementation_gen(user_prompt, test_content, hint=hint):
             if event["type"] == "done":
                 result = (event["success"], event["message"])
         return result
 
-    def _build_user_message(self, user_prompt: str, test_content: str) -> str:
+    def _build_user_message(self, user_prompt: str, test_content: str, hint: str = "") -> str:
         prompt_md_path = self.task_dir / "solution.prompt.md"
         prompt_md_section = ""
         if prompt_md_path.exists():
             prompt_md_section = self._prompts["prompt_md_section"]["template"].format(
                 prompt_md=prompt_md_path.read_text()
             )
-        return self._prompts["implementation"]["user"].format(
+        message = self._prompts["implementation"]["user"].format(
             user_prompt=user_prompt,
             test_content=test_content,
             prompt_md_section=prompt_md_section,
         )
+        if hint:
+            message += f"\n\n<user_hint>{hint}</user_hint>"
+        return message
 
     def _llm_call(self, state: _LoopState):
         self.metrics.impl_llm_calls += 1
@@ -492,18 +495,23 @@ class AgentLoop:
     # Orchestrator
     # ------------------------------------------------------------------
 
-    def run(self, user_prompt: str, auto_approve: bool = False) -> Iterator[dict]:
+    def run(self, user_prompt: str, auto_approve: bool = False, hint: str = "") -> Iterator[dict]:
         """Run the agent, yielding structured AgentEvent dicts.
 
         Event types emitted in order:
           {"type": "phase", "phase": "test_generation"}
           {"type": "test_generated", "content": str, "test_count": int}
-          {"type": "awaiting_approval", "content": str}   # only when auto_approve=False
+          {"type": "awaiting_approval", "content": str}   # only when auto_approve=False;
+                                                           # caller may send a hint string back
           {"type": "phase", "phase": "implementation"}
           {"type": "tool_call", "tool": str, ...}         # one per tool call
           {"type": "coverage", "pct": float}              # only on success with coverage > 0
           {"type": "done", "success": bool, "message": str,
            "failure_reason": str, "failure_category": str}
+
+        For CLI use: when auto_approve=False, send a hint string via generator.send() in
+        response to the "awaiting_approval" event to inject it into the implementation prompt.
+        For API use: pass hint= directly; auto_approve=True bypasses the pause entirely.
         """
         self.task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -513,11 +521,13 @@ class AgentLoop:
                "test_count": test_content.count("def test_")}
 
         if not auto_approve:
-            yield {"type": "awaiting_approval", "content": test_content}
+            sent = yield {"type": "awaiting_approval", "content": test_content}
+            if isinstance(sent, str) and sent:
+                hint = sent
 
         self._logger.info("Starting implementation loop...")
         yield {"type": "phase", "phase": "implementation"}
-        yield from self._implementation_gen(user_prompt, test_content)
+        yield from self._implementation_gen(user_prompt, test_content, hint=hint)
 
         save_metrics(self.metrics, self.task_dir, conn=self._db_conn)
         total_in = self.metrics.test_gen_input_tokens + self.metrics.impl_input_tokens

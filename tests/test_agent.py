@@ -748,6 +748,45 @@ class TestAgentLoopRun:
         assert "awaiting_approval" in types
         assert events[types.index("awaiting_approval")]["content"] == "def test_foo(): pass"
 
+    def test_hint_sent_via_generator_send(self, tmp_task_dir, mock_client):
+        """Hint sent via gen.send() is forwarded to _implementation_gen."""
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        captured: list[str] = []
+
+        def fake_impl_gen(user_prompt, test_content, hint=""):
+            captured.append(hint)
+            yield _done_event(True)
+
+        with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
+            with patch.object(loop, "_implementation_gen", side_effect=fake_impl_gen):
+                gen = loop.run("task", auto_approve=False)
+                event = next(gen)
+                while event["type"] != "awaiting_approval":
+                    event = next(gen)
+                # send the hint back into the generator
+                try:
+                    while True:
+                        event = gen.send("use a heap")
+                except StopIteration:
+                    pass
+
+        assert captured == ["use a heap"]
+
+    def test_hint_param_used_when_auto_approve(self, tmp_task_dir, mock_client):
+        """hint= parameter is forwarded when auto_approve=True (no send needed)."""
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        captured: list[str] = []
+
+        def fake_impl_gen(user_prompt, test_content, hint=""):
+            captured.append(hint)
+            yield _done_event(True)
+
+        with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
+            with patch.object(loop, "_implementation_gen", side_effect=fake_impl_gen):
+                list(loop.run("task", auto_approve=True, hint="use a heap"))
+
+        assert captured == ["use a heap"]
+
     def test_phase_events_in_order(self, tmp_task_dir, mock_client):
         loop = self._make_loop(tmp_task_dir, mock_client)
         with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):

@@ -133,7 +133,9 @@ def main() -> None:
     )
 
     try:
-        for event in loop.run(args.prompt):
+        gen = loop.run(args.prompt)
+        event = next(gen)
+        while True:
             if event["type"] == "awaiting_approval":
                 print("\n" + "=" * 60)
                 print("GENERATED TESTS (solution_test.py):")
@@ -141,12 +143,19 @@ def main() -> None:
                 print(event["content"])
                 print("=" * 60)
                 try:
-                    input("\nPress Enter to start implementation, or Ctrl+C to abort...\n")
+                    hint = input(
+                        "\nOptional hint for the agent (or press Enter to skip): "
+                    ).strip()
+                    input("Press Enter to start implementation, or Ctrl+C to abort...\n")
                 except KeyboardInterrupt:
                     print("\nAborted.")
                     sys.exit(0)
+                event = gen.send(hint or None)
             else:
                 _render_event(event)
+                event = next(gen)
+    except StopIteration:
+        pass
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(0)
