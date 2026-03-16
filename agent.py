@@ -1,3 +1,4 @@
+import ast
 import sqlite3
 import subprocess
 import sys
@@ -10,10 +11,9 @@ from typing import Optional
 
 import anthropic
 
+from config import DEFAULT_MODEL, DEFAULT_MAX_ITERATIONS, DEFAULT_PROMPTS_VERSION
 from logger import RunMetrics, setup_logging, save_metrics
 from tools import TOOL_SCHEMAS, dispatch_tool
-
-DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 @dataclass
@@ -38,9 +38,9 @@ _RETRYABLE = (
 @dataclass
 class AgentConfig:
     model: str = DEFAULT_MODEL
-    max_iterations: int = 10
+    max_iterations: int = DEFAULT_MAX_ITERATIONS
     max_retries: int = 3
-    prompts_version: str = "v2.4"
+    prompts_version: str = DEFAULT_PROMPTS_VERSION
     allow_test_revision: bool = False
     auto_approve_revision: bool = False
     min_coverage: float = 0.0
@@ -182,6 +182,10 @@ class AgentLoop:
         )
 
         test_content = response.content[0].text.strip()
+        try:
+            ast.parse(test_content)
+        except SyntaxError as e:
+            raise ValueError(f"Generated test file is not valid Python: {e}") from e
         test_path = self.task_dir / "solution_test.py"
         test_path.write_text(test_content)
         test_count = test_content.count("def test_")

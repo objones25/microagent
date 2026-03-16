@@ -3,6 +3,7 @@ import math
 import operator
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import requests
@@ -316,7 +317,7 @@ def tool_firecrawl_search(inputs: dict) -> str:
 
 def tool_run_python(inputs: dict, task_dir: Path) -> str:
     result = subprocess.run(
-        ["python", "-c", inputs["code"]],
+        [sys.executable, "-c", inputs["code"]],
         cwd=str(task_dir),
         capture_output=True,
         text=True,

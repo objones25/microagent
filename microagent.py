@@ -24,6 +24,7 @@ import anthropic
 
 import db
 from agent import AgentLoop, AgentConfig
+from config import DEFAULT_MODEL, DEFAULT_PROMPTS_VERSION, DEFAULT_MAX_ITERATIONS
 from logger import setup_logging
 
 
@@ -39,20 +40,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="claude-sonnet-4-6",
-        help="Claude model to use (default: claude-sonnet-4-6)",
+        default=DEFAULT_MODEL,
+        help=f"Claude model to use (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=10,
-        help="Max implementation attempts before giving up (default: 10)",
+        default=DEFAULT_MAX_ITERATIONS,
+        help=f"Max implementation attempts before giving up (default: {DEFAULT_MAX_ITERATIONS})",
     )
     parser.add_argument(
         "--prompts",
-        default="v2.8",
+        default=DEFAULT_PROMPTS_VERSION,
         metavar="VERSION",
-        help="Prompts version to load from prompts/<VERSION>.toml (default: v2.8)",
+        help=f"Prompts version to load from prompts/<VERSION>.toml (default: {DEFAULT_PROMPTS_VERSION})",
     )
     parser.add_argument(
         "--allow-test-revision",

@@ -32,6 +32,7 @@ import anthropic
 
 import db
 from agent import AgentLoop, AgentConfig, load_prompts, _RETRYABLE
+from config import DEFAULT_MODEL, DEFAULT_PROMPTS_VERSION, DEFAULT_EVAL_PROMPTS_VERSION, DEFAULT_MAX_ITERATIONS_EVAL
 from logger import RunMetrics, setup_logging, save_metrics
 
 
@@ -292,22 +293,22 @@ def run_suite(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate microagent on a suite of coding tasks")
-    parser.add_argument("--prompts", default="v2.8", metavar="VERSION",
-                        help="Agent prompts version to use (default: v2.8)")
+    parser.add_argument("--prompts", default=DEFAULT_PROMPTS_VERSION, metavar="VERSION",
+                        help=f"Agent prompts version to use (default: {DEFAULT_PROMPTS_VERSION})")
     parser.add_argument("--compare", default=None, metavar="VERSION",
                         help="Second agent prompts version to A/B test against --prompts")
     parser.add_argument("--tasks", type=int, default=10,
                         help="Number of tasks to randomly sample from DB (default: 10)")
-    parser.add_argument("--max-iter", type=int, default=5,
-                        help="Max implementation iterations per task (default: 5)")
+    parser.add_argument("--max-iter", type=int, default=DEFAULT_MAX_ITERATIONS_EVAL,
+                        help=f"Max implementation iterations per task (default: {DEFAULT_MAX_ITERATIONS_EVAL})")
     parser.add_argument("--out", default=None,
                         help="Save raw results JSON to this file")
     parser.add_argument("--optimize", action="store_true",
                         help="After judge analysis, call Claude to produce an improved prompt version in DB")
     parser.add_argument("--meta-judge", action="store_true",
                         help="After judging, call Claude to evaluate the quality of the judge's output")
-    parser.add_argument("--eval-prompts", default="eval-v1.4", metavar="VERSION",
-                        help="Eval prompts version (judge, optimizer, meta-judge) (default: eval-v1.4)")
+    parser.add_argument("--eval-prompts", default=DEFAULT_EVAL_PROMPTS_VERSION, metavar="VERSION",
+                        help=f"Eval prompts version (judge, optimizer, meta-judge) (default: {DEFAULT_EVAL_PROMPTS_VERSION})")
     parser.add_argument("--allow-test-revision", action="store_true",
                         help="When the agent stops without passing tests, offer it a chance to revise tests (requires --auto-approve-revision for non-interactive use)")
     parser.add_argument("--auto-approve-revision", action="store_true",
