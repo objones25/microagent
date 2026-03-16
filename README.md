@@ -72,15 +72,30 @@ task-20240613-120000/
 └── run.log             # timestamped DEBUG-level log
 ```
 
-Console output shows a structured log of every tool call:
+Console output streams in real time: LLM thinking text, file writes line-by-line as they're generated, and a structured log of every tool call:
 
 ```
-  → read_file: solution_test.py
-  → write_file: solution.py (45 lines)
-  → run_subprocess: pytest solution_test.py -v
-    ✗ == 2 failed in 0.12s == | failing: test_encode, test_roundtrip
-  → run_subprocess: pytest solution_test.py -v
-    ✓ == 3 passed in 0.09s ==
+Generating tests...
+
+Starting implementation loop...
+I'll implement the function step by step...
+  [read]  solution_test.py
+  [run]   pytest solution_test.py --collect-only  →  FAIL
+
+  [write] solution.py
+     1 │ def fizzbuzz(n):
+     2 │     result = []
+     3 │     ...
+  [write] solution.py (15 lines)
+  [run]   pytest solution_test.py -v  →  FAIL
+            ✗ test_large_n
+  [write] solution.py (15 lines)
+  [run]   pytest solution_test.py -v  →  PASS
+  Coverage: 100.0%
+
+============================================================
+SUCCESS — all tests passed!
+============================================================
 ```
 
 ---
@@ -295,7 +310,7 @@ uv run pytest -q            # quiet output
 uv run pytest tests/test_agent.py   # single file
 ```
 
-Coverage is enforced at 98% (`--cov-fail-under=98`). Current coverage: **99%** across `agent.py`, `eval.py`, and `microagent.py`.
+Coverage is enforced at 98% (`--cov-fail-under=98`). Current coverage: **98.5%** across `agent.py`, `eval.py`, and `microagent.py`.
 
 ---
 
