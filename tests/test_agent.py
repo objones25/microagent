@@ -16,6 +16,7 @@ from agent import (
     AgentLoop,
     DEFAULT_MODEL,
     _RETRYABLE,
+    _extract_write_lines,
     _parse_coverage_pct,
     _parse_pytest_result,
     _tests_passed,
@@ -24,6 +25,7 @@ from agent import (
 from tests.conftest import (
     MINIMAL_PROMPTS,
     make_response,
+    make_stream_mock,
     make_text_block,
     make_tool_block,
 )
@@ -147,6 +149,185 @@ class TestTestsPassed:
 
 
 # ---------------------------------------------------------------------------
+# _extract_write_lines
+# ---------------------------------------------------------------------------
+
+class TestExtractWriteLines:
+    def test_no_content_key(self):
+        path, lines, count = _extract_write_lines('{"path": "f.py"', 0)
+        assert path == "f.py"
+        assert lines == []
+        assert count == 0
+
+    def test_no_path_key(self):
+        path, lines, count = _extract_write_lines('{"content": "hi\\n"', 0)
+        assert path is None
+        assert lines == ["hi"]
+        assert count == 1
+
+    def test_partial_snapshot_no_lines_yet(self):
+        snapshot = '{"path": "sol.py", "content": "def foo'
+        path, lines, count = _extract_write_lines(snapshot, 0)
+        assert path == "sol.py"
+        assert lines == []
+        assert count == 0
+
+    def test_one_complete_line(self):
+        snapshot = '{"path": "sol.py", "content": "def foo():\\n    pass'
+        path, lines, count = _extract_write_lines(snapshot, 0)
+        assert path == "sol.py"
+        assert lines == ["def foo():"]
+        assert count == 1
+
+    def test_incremental_prev_count(self):
+        """prev_count=1 → only emit lines after the first."""
+        snapshot = '{"path": "sol.py", "content": "line1\\nline2\\nline3'
+        path, lines, count = _extract_write_lines(snapshot, 1)
+        assert lines == ["line2"]
+        assert count == 2
+
+    def test_decodes_json_escapes(self):
+        # JSON \t (backslash+t in raw JSON) should decode to real tab
+        snapshot = '{"path": "f.py", "content": "a\\tb\\n'
+        path, lines, count = _extract_write_lines(snapshot, 0)
+        assert lines == ["a\tb"]
+
+    def test_decodes_escaped_backslash(self):
+        snapshot = '{"path": "f.py", "content": "a\\\\b\\n'
+        path, lines, count = _extract_write_lines(snapshot, 0)
+        assert lines == ["a\\b"]
+
+    def test_decodes_escaped_quote(self):
+        snapshot = '{"path": "f.py", "content": "say \\"hi\\"\\n'
+        path, lines, count = _extract_write_lines(snapshot, 0)
+        assert lines == ['say "hi"']
+
+    def test_prev_count_already_caught_up(self):
+        """No new lines since last call → returns empty."""
+        snapshot = '{"path": "f.py", "content": "line1\\n'
+        path, lines, count = _extract_write_lines(snapshot, 1)
+        assert lines == []
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# _llm_call streaming — unit tests via a mock stream
+# ---------------------------------------------------------------------------
+
+class TestLlmCallStreaming:
+    """Test _llm_call generator using a mock stream that emits specific events."""
+
+    def _make_loop(self, tmp_task_dir, mock_client):
+        return AgentLoop(
+            client=mock_client,
+            task_dir=tmp_task_dir,
+            prompts=MINIMAL_PROMPTS,
+            logger=MagicMock(),
+        )
+
+    def _make_stream(self, events, response):
+        """Build a mock context manager whose __iter__ yields SimpleNamespace events."""
+        class _Stream:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def __iter__(self):
+                return iter(events)
+            def get_final_message(self):
+                return response
+        return _Stream()
+
+    def _run(self, loop, stream):
+        from agent import _LoopState
+        state = _LoopState(messages=[{"role": "user", "content": "go"}])
+        loop.client.messages.stream.return_value = stream
+        return list(loop._llm_call(state))
+
+    def test_text_delta_emitted(self, tmp_task_dir, mock_client):
+        resp = make_response([make_text_block("done")], stop_reason="end_turn")
+        stream = self._make_stream([
+            SimpleNamespace(type="text", text="think"),
+            SimpleNamespace(type="text", text=""),  # empty text skipped
+        ], resp)
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        events = self._run(loop, stream)
+        text_events = [e for e in events if e["type"] == "text_delta"]
+        assert len(text_events) == 1
+        assert text_events[0]["text"] == "think"
+
+    def test_write_line_emitted(self, tmp_task_dir, mock_client):
+        resp = make_response([make_text_block("")], stop_reason="end_turn")
+        snapshot1 = '{"path": "sol.py", "content": "def foo():\\n    pass'
+        snapshot2 = '{"path": "sol.py", "content": "def foo():\\n    pass\\n"}'
+        stream = self._make_stream([
+            SimpleNamespace(type="content_block_start",
+                            content_block=SimpleNamespace(type="tool_use", name="write_file")),
+            SimpleNamespace(type="input_json", snapshot=snapshot1),
+            SimpleNamespace(type="input_json", snapshot=snapshot2),
+            SimpleNamespace(type="content_block_stop"),
+        ], resp)
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        events = self._run(loop, stream)
+        write_events = [e for e in events if e["type"] == "write_line"]
+        assert len(write_events) == 2
+        assert write_events[0]["line"] == "def foo():"
+        assert write_events[0]["line_num"] == 1
+        assert write_events[0]["path"] == "sol.py"
+        assert write_events[1]["line"] == "    pass"
+        assert write_events[1]["line_num"] == 2
+
+    def test_non_write_file_tool_no_write_lines(self, tmp_task_dir, mock_client):
+        """input_json for a non-write_file tool emits nothing."""
+        resp = make_response([], stop_reason="end_turn")
+        stream = self._make_stream([
+            SimpleNamespace(type="content_block_start",
+                            content_block=SimpleNamespace(type="tool_use", name="read_file")),
+            SimpleNamespace(type="input_json", snapshot='{"path": "x.py"}'),
+        ], resp)
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        events = self._run(loop, stream)
+        assert not any(e["type"] == "write_line" for e in events)
+
+    def test_text_block_resets_current_tool(self, tmp_task_dir, mock_client):
+        """content_block_start with a text block sets current_tool to None."""
+        resp = make_response([], stop_reason="end_turn")
+        stream = self._make_stream([
+            SimpleNamespace(type="content_block_start",
+                            content_block=SimpleNamespace(type="text")),
+            SimpleNamespace(type="input_json", snapshot='{"path": "x.py"}'),
+        ], resp)
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        events = self._run(loop, stream)
+        assert not any(e["type"] == "write_line" for e in events)
+
+    def test_response_sentinel_carries_final_message(self, tmp_task_dir, mock_client):
+        resp = make_response([make_text_block("ok")], stop_reason="end_turn",
+                             in_tok=10, out_tok=5)
+        stream = self._make_stream([], resp)
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        events = self._run(loop, stream)
+        sentinel = next(e for e in events if e["type"] == "_response")
+        assert sentinel["response"] is resp
+        assert loop.metrics.impl_input_tokens == 10
+        assert loop.metrics.impl_output_tokens == 5
+
+    def test_content_block_stop_clears_tool(self, tmp_task_dir, mock_client):
+        """content_block_stop resets current_tool so subsequent input_json is ignored."""
+        resp = make_response([], stop_reason="end_turn")
+        stream = self._make_stream([
+            SimpleNamespace(type="content_block_start",
+                            content_block=SimpleNamespace(type="tool_use", name="write_file")),
+            SimpleNamespace(type="content_block_stop"),
+            SimpleNamespace(type="input_json",
+                            snapshot='{"path": "f.py", "content": "x\\n"}'),
+        ], resp)
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        events = self._run(loop, stream)
+        assert not any(e["type"] == "write_line" for e in events)
+
+
+# ---------------------------------------------------------------------------
 # AgentLoop.__init__
 # ---------------------------------------------------------------------------
 
@@ -259,9 +440,9 @@ def _make_loop(tmp_task_dir, mock_client, config=None):
 
 class TestRunImplementationLoopEndTurn:
     def test_end_turn_no_solution_py(self, tmp_task_dir, mock_client):
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [make_text_block("done")], stop_reason="end_turn"
-        )
+        ))
         loop = _make_loop(tmp_task_dir, mock_client)
         success, msg = loop.run_implementation_loop("task", "tests")
         assert not success
@@ -269,9 +450,9 @@ class TestRunImplementationLoopEndTurn:
 
     def test_end_turn_tests_pass(self, tmp_task_dir, mock_client):
         (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [make_text_block("done")], stop_reason="end_turn"
-        )
+        ))
         with patch("agent.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(
                 stdout="== 3 passed in 0.05s ==\n", stderr=""
@@ -283,9 +464,9 @@ class TestRunImplementationLoopEndTurn:
 
     def test_end_turn_tests_fail(self, tmp_task_dir, mock_client):
         (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [make_text_block("gave up")], stop_reason="end_turn"
-        )
+        ))
         with patch("agent.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(
                 stdout="== 1 failed in 0.05s ==\n", stderr=""
@@ -297,9 +478,9 @@ class TestRunImplementationLoopEndTurn:
 
     def test_end_turn_coverage_stored_in_metrics(self, tmp_task_dir, mock_client):
         (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [make_text_block("done")], stop_reason="end_turn"
-        )
+        ))
         cov_output = "solution.py      20      0   100%\nTOTAL  20  0  100%\n"
         with patch("agent.subprocess.run") as mock_run:
             mock_run.side_effect = [
@@ -313,9 +494,9 @@ class TestRunImplementationLoopEndTurn:
 
     def test_end_turn_coverage_below_min_fails(self, tmp_task_dir, mock_client):
         (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [make_text_block("done")], stop_reason="end_turn"
-        )
+        ))
         cov_output = "solution.py      20      6    70%\n"
         with patch("agent.subprocess.run") as mock_run:
             mock_run.side_effect = [
@@ -331,9 +512,9 @@ class TestRunImplementationLoopEndTurn:
     def test_end_turn_no_text_block(self, tmp_task_dir, mock_client):
         """end_turn with no text block in content → final_text is empty."""
         (tmp_task_dir / "solution.py").write_text("def f(): pass\n")
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [], stop_reason="end_turn"
-        )
+        ))
         with patch("agent.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(
                 stdout="== 1 failed ==\n", stderr=""
@@ -343,9 +524,9 @@ class TestRunImplementationLoopEndTurn:
         assert not success
 
     def test_no_tool_calls_not_end_turn(self, tmp_task_dir, mock_client):
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [], stop_reason="tool_use"  # not end_turn, but also no tools
-        )
+        ))
         loop = _make_loop(tmp_task_dir, mock_client)
         success, msg = loop.run_implementation_loop("task", "tests")
         assert not success
@@ -361,9 +542,9 @@ class TestRunImplementationLoopToolLogging:
 
     def _run_single_tool(self, tmp_task_dir, mock_client, tool_block, dispatch_return="ok"):
         """Helper: run one tool-use turn then end_turn."""
-        mock_client.messages.create.side_effect = [
-            make_response([tool_block]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tool_block])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
         with patch("agent.dispatch_tool", return_value=dispatch_return) as m:
             loop = _make_loop(tmp_task_dir, mock_client)
@@ -392,9 +573,9 @@ class TestRunImplementationLoopToolLogging:
             "== 1 failed in 0.1s ==\n"
         )
         tb = make_tool_block("run_subprocess", {"command": ["pytest", "solution_test.py"]})
-        mock_client.messages.create.side_effect = [
-            make_response([tb]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
         with patch("agent.dispatch_tool", return_value=output):
             loop = _make_loop(tmp_task_dir, mock_client)
@@ -406,9 +587,9 @@ class TestRunImplementationLoopToolLogging:
     def test_run_subprocess_summary_only(self, tmp_task_dir, mock_client):
         output = "== 2 passed in 0.1s ==\n"
         tb = make_tool_block("run_subprocess", {"command": ["pytest"]})
-        mock_client.messages.create.side_effect = [
-            make_response([tb]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
         with patch("agent.dispatch_tool", return_value=output):
             loop = _make_loop(tmp_task_dir, mock_client)
@@ -420,9 +601,9 @@ class TestRunImplementationLoopToolLogging:
         """Output with no summary and no FAILED lines — neither log branch taken."""
         output = "collected 0 items\n"
         tb = make_tool_block("run_subprocess", {"command": ["pytest"]})
-        mock_client.messages.create.side_effect = [
-            make_response([tb]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
         with patch("agent.dispatch_tool", return_value=output):
             loop = _make_loop(tmp_task_dir, mock_client)
@@ -475,9 +656,9 @@ class TestIterationCounter:
         """write_file followed by run_subprocess in same turn increments iteration."""
         tb_write = make_tool_block("write_file", {"path": "solution.py", "content": "x"}, "tc1")
         tb_run = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tc2")
-        mock_client.messages.create.side_effect = [
-            make_response([tb_write, tb_run]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb_write, tb_run])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
         with patch("agent.dispatch_tool", return_value="1 passed in 0.1s"):
             loop = _make_loop(tmp_task_dir, mock_client)
@@ -487,9 +668,9 @@ class TestIterationCounter:
     def test_run_without_prior_write_no_increment(self, tmp_task_dir, mock_client):
         """run_subprocess without a preceding write_file does NOT increment."""
         tb_run = make_tool_block("run_subprocess", {"command": ["pytest"]})
-        mock_client.messages.create.side_effect = [
-            make_response([tb_run]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb_run])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
         with patch("agent.dispatch_tool", return_value="0 passed in 0.1s"):
             loop = _make_loop(tmp_task_dir, mock_client)
@@ -501,9 +682,9 @@ class TestIterationCounter:
         tb_write = make_tool_block("write_file", {"path": "solution.py", "content": "x"}, "tw")
         tb_run = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         # 2 turns each with write+run → 2 iterations; max_iterations=2 → exits
-        mock_client.messages.create.side_effect = [
-            make_response([tb_write, tb_run]),
-            make_response([tb_write, tb_run]),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb_write, tb_run])),
+            make_stream_mock(make_response([tb_write, tb_run])),
         ]
         with patch("agent.dispatch_tool", return_value="1 failed in 0.1s"):
             loop = _make_loop(tmp_task_dir, mock_client, AgentConfig(max_iterations=2))
@@ -520,13 +701,13 @@ class TestIterationCounter:
 class TestPromptMdSection:
     def test_prompt_md_injected(self, tmp_task_dir, mock_client):
         (tmp_task_dir / "solution.prompt.md").write_text("Use numpy.")
-        mock_client.messages.create.return_value = make_response(
+        mock_client.messages.stream.return_value = make_stream_mock(make_response(
             [make_text_block("done")], stop_reason="end_turn"
-        )
+        ))
         loop = _make_loop(tmp_task_dir, mock_client)
         loop.run_implementation_loop("task", "tests")
         # The user message sent to the model should contain prompt_md content
-        call_args = mock_client.messages.create.call_args
+        call_args = mock_client.messages.stream.call_args
         user_msg = call_args.kwargs["messages"][0]["content"]
         assert "Use numpy." in user_msg
 
@@ -557,11 +738,11 @@ class TestTestRevision:
         tb_r = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         tb_rev = make_tool_block("write_file", {"path": "solution_test.py", "content": revised}, "tv")
 
-        mock_client.messages.create.side_effect = [
-            make_response([tb_w, tb_r]),
-            make_response([make_text_block("stopping")], stop_reason="end_turn"),
-            make_response([make_text_block("I think tests are wrong"), tb_rev]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb_w, tb_r])),
+            make_stream_mock(make_response([make_text_block("stopping")], stop_reason="end_turn")),
+            make_stream_mock(make_response([make_text_block("I think tests are wrong"), tb_rev])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
 
         with patch("agent.dispatch_tool", side_effect=self._make_dispatch(tmp_task_dir)):
@@ -592,11 +773,11 @@ class TestTestRevision:
         tb_r = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         tb_rev = make_tool_block("write_file", {"path": "solution_test.py", "content": revised}, "tv")
 
-        mock_client.messages.create.side_effect = [
-            make_response([tb_w, tb_r]),
-            make_response([make_text_block("stopping")], stop_reason="end_turn"),
-            make_response([tb_rev]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb_w, tb_r])),
+            make_stream_mock(make_response([make_text_block("stopping")], stop_reason="end_turn")),
+            make_stream_mock(make_response([tb_rev])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
 
         with patch("agent.dispatch_tool", side_effect=self._make_dispatch(tmp_task_dir)):
@@ -624,11 +805,11 @@ class TestTestRevision:
         tb_r = make_tool_block("run_subprocess", {"command": ["pytest"]}, "tr")
         tb_sol = make_tool_block("write_file", {"path": "solution.py", "content": "def f(): return 1\n"}, "tw2")
 
-        mock_client.messages.create.side_effect = [
-            make_response([tb_w, tb_r]),
-            make_response([make_text_block("stopping")], stop_reason="end_turn"),
-            make_response([tb_sol]),
-            make_response([make_text_block("done")], stop_reason="end_turn"),
+        mock_client.messages.stream.side_effect = [
+            make_stream_mock(make_response([tb_w, tb_r])),
+            make_stream_mock(make_response([make_text_block("stopping")], stop_reason="end_turn")),
+            make_stream_mock(make_response([tb_sol])),
+            make_stream_mock(make_response([make_text_block("done")], stop_reason="end_turn")),
         ]
 
         with patch("agent.dispatch_tool", side_effect=self._make_dispatch(tmp_task_dir)):
@@ -786,6 +967,24 @@ class TestAgentLoopRun:
                 list(loop.run("task", auto_approve=True, hint="use a heap"))
 
         assert captured == ["use a heap"]
+
+    def test_streaming_events_forwarded_through_run(self, tmp_task_dir, mock_client):
+        """text_delta and write_line events from _llm_call propagate through run()."""
+        class _StreamWithText:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def __iter__(self):
+                yield SimpleNamespace(type="text", text="thinking...")
+            def get_final_message(self):
+                return make_response([make_text_block("done")], stop_reason="end_turn")
+
+        loop = self._make_loop(tmp_task_dir, mock_client)
+        mock_client.messages.stream.return_value = _StreamWithText()
+        with patch.object(loop, "generate_tests", return_value="def test_foo(): pass"):
+            events = list(loop.run("task", auto_approve=True))
+        text_events = [e for e in events if e["type"] == "text_delta"]
+        assert len(text_events) == 1
+        assert text_events[0]["text"] == "thinking..."
 
     def test_phase_events_in_order(self, tmp_task_dir, mock_client):
         loop = self._make_loop(tmp_task_dir, mock_client)

@@ -87,6 +87,9 @@ class TestMain:
             ["microagent.py", "do thing", "--task-dir", str(tmp_path)]
         )
         events = [
+            {"type": "text_delta", "text": "Let me think..."},
+            {"type": "write_line", "path": "solution.py", "line": "def foo():", "line_num": 1},
+            {"type": "write_line", "path": "solution.py", "line": "    pass", "line_num": 2},
             {"type": "phase", "phase": "test_generation"},
             {"type": "test_generated", "content": "x", "test_count": 2},
             {"type": "phase", "phase": "implementation"},
@@ -115,6 +118,9 @@ class TestMain:
                             self._mock_loop(MockLoop, events)
                             microagent.main()
         out = capsys.readouterr().out
+        assert "Let me think..." in out
+        assert "solution.py" in out
+        assert "def foo():" in out
         assert "Generating tests" in out
         assert "2 test(s)" in out
         assert "Starting implementation" in out

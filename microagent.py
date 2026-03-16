@@ -31,12 +31,20 @@ from logger import setup_logging
 def _render_event(event: dict) -> None:
     """Render a single AgentEvent to the terminal (non-interactive events only)."""
     match event["type"]:
+        case "text_delta":
+            print(event["text"], end="", flush=True)
+
+        case "write_line":
+            if event["line_num"] == 1:
+                print(f"\n\n  [write] {event['path']}")
+            print(f"  {event['line_num']:4d} │ {event['line']}")
+
         case "phase":
             labels = {
-                "test_generation": "Generating tests...",
-                "implementation": "Starting implementation loop...",
+                "test_generation": "\nGenerating tests...",
+                "implementation": "\nStarting implementation loop...",
             }
-            print("\n" + labels.get(event["phase"], event["phase"]))
+            print(labels.get(event["phase"], event["phase"]))
 
         case "test_generated":
             print(f"  Generated {event['test_count']} test(s).")

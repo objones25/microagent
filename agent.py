@@ -1,4 +1,5 @@
 import ast
+import re
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,48 @@ import anthropic
 from config import DEFAULT_MODEL, DEFAULT_MAX_ITERATIONS, DEFAULT_PROMPTS_VERSION
 from logger import RunMetrics, setup_logging, save_metrics
 from tools import TOOL_SCHEMAS, dispatch_tool
+
+def _extract_write_lines(snapshot: str, prev_count: int) -> tuple[str | None, list[str], int]:
+    """Extract path and new complete lines from a partial write_file JSON snapshot.
+
+    snapshot:   raw JSON text accumulated by the streaming API (not parsed)
+    prev_count: number of complete lines already emitted
+    Returns:    (path_or_None, new_decoded_lines, new_total_count)
+    """
+    # Extract path (file paths don't normally need escape handling)
+    path: str | None = None
+    m = re.search(r'"path"\s*:\s*"([^"]*)"', snapshot)
+    if m:
+        path = m.group(1)
+
+    # Find the start of the content string value
+    cm = re.search(r'"content"\s*:\s*"', snapshot)
+    if not cm:
+        return path, [], prev_count
+
+    content_raw = snapshot[cm.end():]
+
+    # The JSON escape \n (2-char backslash+n) marks each newline in the file.
+    # In Python source '\\n' is the 2-char string \+n, which is what we want.
+    parts = content_raw.split("\\n")
+    total_complete = len(parts) - 1  # last segment is the incomplete current line
+
+    if total_complete <= prev_count:
+        return path, [], prev_count
+
+    new_lines: list[str] = []
+    for raw in parts[prev_count:total_complete]:
+        # Decode the most common JSON string escapes
+        line = (
+            raw.replace("\\\\", "\\")
+               .replace('\\"', '"')
+               .replace("\\t", "\t")
+               .replace("\\r", "\r")
+        )
+        new_lines.append(line)
+
+    return path, new_lines, total_complete
+
 
 _RETRYABLE = (
     anthropic.RateLimitError,
@@ -202,7 +245,12 @@ class AgentLoop:
             messages=[{"role": "user", "content": self._build_user_message(user_prompt, test_content, hint)}]
         )
         while state.iteration < self.max_iterations:
-            response = self._llm_call(state)
+            response = None
+            for event in self._llm_call(state):
+                if event["type"] == "_response":
+                    response = event["response"]
+                else:
+                    yield event
             tool_calls = [b for b in response.content if b.type == "tool_use"]
 
             if response.stop_reason == "end_turn":
@@ -278,18 +326,56 @@ class AgentLoop:
             message += f"\n\n<user_hint>{hint}</user_hint>"
         return message
 
-    def _llm_call(self, state: _LoopState):
+    def _llm_call(self, state: _LoopState) -> Iterator[dict]:
+        """Stream one LLM call.
+
+        Yields:
+          {"type": "text_delta", "text": str}            — agent reasoning tokens
+          {"type": "write_line", "path": str,
+           "line": str, "line_num": int}                 — write_file lines as generated
+          {"type": "_response", "response": Message}    — sentinel; always last
+        """
         self.metrics.impl_llm_calls += 1
-        response = self._call_api_with_retry(
+        current_tool: str | None = None
+        write_path: str | None = None
+        write_lines_emitted: int = 0
+
+        with self.client.messages.stream(
             model=self.model,
             max_tokens=8096,
             system=self._prompts["implementation"]["system"],
             tools=TOOL_SCHEMAS,
             messages=state.messages,
-        )
-        self.metrics.impl_input_tokens += response.usage.input_tokens
-        self.metrics.impl_output_tokens += response.usage.output_tokens
-        return response
+        ) as stream:
+            for event in stream:
+                if event.type == "content_block_start":
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        current_tool = block.name
+                        write_path = None
+                        write_lines_emitted = 0
+                    else:
+                        current_tool = None
+                elif event.type == "content_block_stop":
+                    current_tool = None
+                elif event.type == "text":
+                    if event.text:
+                        yield {"type": "text_delta", "text": event.text}
+                elif event.type == "input_json" and current_tool == "write_file":
+                    path, new_lines, write_lines_emitted = _extract_write_lines(
+                        event.snapshot, write_lines_emitted
+                    )
+                    if path and write_path is None:
+                        write_path = path
+                    start = write_lines_emitted - len(new_lines) + 1
+                    for i, line in enumerate(new_lines, start=start):
+                        yield {"type": "write_line", "path": write_path or "?",
+                               "line": line, "line_num": i}
+            final = stream.get_final_message()
+
+        self.metrics.impl_input_tokens += final.usage.input_tokens
+        self.metrics.impl_output_tokens += final.usage.output_tokens
+        yield {"type": "_response", "response": final}
 
     def _handle_end_turn(self, response, state: _LoopState) -> tuple[bool, str] | None:
         """Return (success, message) to stop the loop, or None to continue."""

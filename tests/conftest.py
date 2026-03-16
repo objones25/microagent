@@ -74,6 +74,24 @@ def make_response(content, stop_reason="tool_use", in_tok=100, out_tok=50):
     return SimpleNamespace(content=content, stop_reason=stop_reason, usage=usage)
 
 
+def make_stream_mock(response):
+    """Wrap a make_response() result in a mock context manager for client.messages.stream().
+
+    Emits no intermediate stream events — only returns the final message.
+    Use this to replace messages.create.return_value in implementation loop tests.
+    """
+    class _StreamMock:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def __iter__(self):
+            return iter([])
+        def get_final_message(self):
+            return response
+    return _StreamMock()
+
+
 # ---------------------------------------------------------------------------
 # RunMetrics factory
 # ---------------------------------------------------------------------------
