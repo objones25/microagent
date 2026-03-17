@@ -63,6 +63,9 @@ _semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 VERSION = "0.1.0"
 
+MAX_PROMPT_LENGTH = 1000
+MAX_ALLOWED_ITERATIONS = 20
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -131,11 +134,16 @@ async def websocket_run(websocket: WebSocket):
         await websocket.close()
         return
 
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        await websocket.send_json({"type": "error", "message": f"prompt too long (max {MAX_PROMPT_LENGTH} characters)"})
+        await websocket.close()
+        return
+
     cfg_data = start_msg.get("config") or {}
     try:
         config = AgentConfig(
             model=cfg_data.get("model", DEFAULT_MODEL),
-            max_iterations=int(cfg_data.get("max_iterations", DEFAULT_MAX_ITERATIONS)),
+            max_iterations=min(int(cfg_data.get("max_iterations", DEFAULT_MAX_ITERATIONS)), MAX_ALLOWED_ITERATIONS),
             prompts_version=cfg_data.get("prompts_version", DEFAULT_PROMPTS_VERSION),
             allow_test_revision=bool(cfg_data.get("allow_test_revision", False)),
             auto_approve_revision=bool(cfg_data.get("auto_approve_revision", False)),

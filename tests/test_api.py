@@ -186,6 +186,42 @@ class TestWebSocketValidation:
         assert msg["type"] == "error"
         assert "config" in msg["message"]
 
+    def test_prompt_too_long_sends_error(self):
+        with client.websocket_connect("/ws/run") as ws:
+            ws.send_json({"prompt": "x" * 1001})
+            msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert "too long" in msg["message"]
+
+    def test_prompt_at_max_length_is_accepted(self):
+        loop_patch = patch("api.AgentLoop", return_value=_make_loop_mock(_done_gen()))
+        client_patch = patch("api.anthropic.Anthropic")
+        with loop_patch, client_patch:
+            with client.websocket_connect("/ws/run") as ws:
+                ws.send_json({"prompt": "x" * 1000})
+                msgs = _recv_all(ws)
+        assert msgs[-1]["type"] == "done"
+
+    def test_max_iterations_capped(self):
+        captured = {}
+
+        def gen_fn(prompt, auto_approve=False, hint=""):
+            yield {"type": "done", "success": True, "message": "", "solution": ""}
+
+        def capture_loop(client, task_dir, config):
+            captured["config"] = config
+            return _make_loop_mock(gen_fn)
+
+        loop_patch = patch("api.AgentLoop", side_effect=capture_loop)
+        client_patch = patch("api.anthropic.Anthropic")
+        with loop_patch, client_patch:
+            with client.websocket_connect("/ws/run") as ws:
+                ws.send_json({"prompt": "do it", "config": {"max_iterations": 9999}})
+                _recv_all(ws)
+
+        import api as api_module
+        assert captured["config"].max_iterations == api_module.MAX_ALLOWED_ITERATIONS
+
 
 # ---------------------------------------------------------------------------
 # WebSocket — event streaming
