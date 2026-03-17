@@ -21,14 +21,18 @@ Client → Server (resume after awaiting_approval):
 """
 
 import asyncio
+import logging
 import os
 import queue
 import tempfile
 import threading
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anthropic
+import sentry_sdk
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +41,27 @@ from agent import AgentConfig, AgentLoop
 from config import DEFAULT_MAX_ITERATIONS, DEFAULT_MODEL, DEFAULT_PROMPTS_VERSION
 
 load_dotenv()
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("microagent.api")
+
+# ── Sentry (optional) ────────────────────────────────────────────────────────
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:  # pragma: no cover
+    sentry_sdk.init(dsn=_sentry_dsn, traces_sample_rate=0.1)  # pragma: no cover
+
+# ── Uptime tracking ──────────────────────────────────────────────────────────
+_start_time = time.time()
+
+# ── Concurrency cap ──────────────────────────────────────────────────────────
+MAX_CONCURRENT_RUNS = int(os.getenv("MAX_CONCURRENT_RUNS", "5"))
+_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+
+VERSION = "0.1.0"
 
 
 @asynccontextmanager
@@ -60,7 +85,13 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "uptime_s": round(time.time() - _start_time, 1),
+        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "concurrent_runs": MAX_CONCURRENT_RUNS - _semaphore._value,
+    }
 
 
 @app.get("/config/defaults")
@@ -75,11 +106,23 @@ async def config_defaults():
 @app.websocket("/ws/run")
 async def websocket_run(websocket: WebSocket):
     await websocket.accept()
+    request_id = uuid.uuid4().hex[:8]
 
-    # ── Parse start message ──────────────────────────────────────────
+    # ── Token auth ───────────────────────────────────────────────────────────
+    secret = os.getenv("API_SECRET_TOKEN")
+    if secret:
+        token = websocket.query_params.get("token", "")
+        if token != secret:
+            await websocket.close(code=1008)
+            return
+
+    logger.info("ws_connect request_id=%s", request_id)
+
+    # ── Parse start message ──────────────────────────────────────────────────
     try:
         start_msg = await websocket.receive_json()
     except WebSocketDisconnect:
+        logger.info("ws_disconnect_before_prompt request_id=%s", request_id)
         return
 
     prompt = start_msg.get("prompt", "").strip()
@@ -103,75 +146,97 @@ async def websocket_run(websocket: WebSocket):
         await websocket.close()
         return
 
-    # ── Queues bridging sync generator ↔ async handler ───────────────
-    event_loop = asyncio.get_event_loop()
-    event_queue: asyncio.Queue = asyncio.Queue()
-    hint_queue: queue.Queue = queue.Queue()
+    # ── Concurrency cap ──────────────────────────────────────────────────────
+    if _semaphore._value == 0:
+        await websocket.send_json({"type": "error", "message": "server at capacity, try again later"})
+        await websocket.close()
+        return
 
-    # ── Generator thread ─────────────────────────────────────────────
-    def run_agent():
+    logger.info("ws_run_start request_id=%s prompt=%.80r model=%s", request_id, prompt, config.model)
+    run_start = time.time()
+    success = False
+
+    async with _semaphore:
+        # ── Queues bridging sync generator ↔ async handler ───────────────────
+        event_loop = asyncio.get_event_loop()
+        event_queue: asyncio.Queue = asyncio.Queue()
+        hint_queue: queue.Queue = queue.Queue()
+
+        # ── Generator thread ─────────────────────────────────────────────────
+        def run_agent():
+            try:
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                client = anthropic.Anthropic(api_key=api_key)
+                with tempfile.TemporaryDirectory(prefix="task-") as tmpdir:
+                    task_dir = Path(tmpdir)
+                    loop = AgentLoop(client=client, task_dir=task_dir, config=config)
+                    gen = loop.run(prompt, auto_approve=config.allow_test_revision)
+
+                    event = next(gen)
+                    while True:
+                        # Forward event to async handler
+                        if event.get("type") != "_response":
+                            event_loop.call_soon_threadsafe(event_queue.put_nowait, event)
+
+                        if event.get("type") == "awaiting_approval":
+                            # Block until the async handler sends a hint back
+                            hint = hint_queue.get()
+                            event = gen.send(hint)
+                        elif event.get("type") == "done":
+                            break
+                        else:
+                            event = next(gen)
+
+            except StopIteration:
+                pass
+            except Exception as e:
+                event_loop.call_soon_threadsafe(
+                    event_queue.put_nowait, {"type": "error", "message": str(e)}
+                )
+            finally:
+                event_loop.call_soon_threadsafe(event_queue.put_nowait, None)  # sentinel
+
+        executor_thread = threading.Thread(target=run_agent, daemon=True)
+        executor_thread.start()
+
+        # ── Async relay loop ─────────────────────────────────────────────────
         try:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            client = anthropic.Anthropic(api_key=api_key)
-            with tempfile.TemporaryDirectory(prefix="task-") as tmpdir:
-                task_dir = Path(tmpdir)
-                loop = AgentLoop(client=client, task_dir=task_dir, config=config)
-                gen = loop.run(prompt, auto_approve=config.allow_test_revision)
+            while True:
+                event = await event_queue.get()
 
-                event = next(gen)
-                while True:
-                    # Forward event to async handler
-                    if event.get("type") != "_response":
-                        event_loop.call_soon_threadsafe(event_queue.put_nowait, event)
-
-                    if event.get("type") == "awaiting_approval":
-                        # Block until the async handler sends a hint back
-                        hint = hint_queue.get()
-                        event = gen.send(hint)
-                    elif event.get("type") == "done":
-                        break
-                    else:
-                        event = next(gen)
-
-        except StopIteration:
-            pass
-        except Exception as e:
-            event_loop.call_soon_threadsafe(
-                event_queue.put_nowait, {"type": "error", "message": str(e)}
-            )
-        finally:
-            event_loop.call_soon_threadsafe(event_queue.put_nowait, None)  # sentinel
-
-    executor_thread = threading.Thread(target=run_agent, daemon=True)
-    executor_thread.start()
-
-    # ── Async relay loop ─────────────────────────────────────────────
-    try:
-        while True:
-            event = await event_queue.get()
-
-            if event is None:  # sentinel — generator finished
-                break
-
-            await websocket.send_json(event)
-
-            if event.get("type") == "awaiting_approval":
-                # Wait for client approval/hint message
-                try:
-                    client_msg = await websocket.receive_json()
-                    hint = client_msg.get("hint") or ""
-                except WebSocketDisconnect:
-                    hint_queue.put("")
+                if event is None:  # sentinel — generator finished
                     break
-                hint_queue.put(hint)
 
-            elif event.get("type") in ("done", "error"):
-                break
+                await websocket.send_json(event)
 
-    except WebSocketDisconnect:  # pragma: no cover
-        pass  # pragma: no cover
-    finally:
-        try:
-            await websocket.close()
-        except Exception:  # pragma: no cover
+                if event.get("type") == "awaiting_approval":
+                    # Wait for client approval/hint message
+                    try:
+                        client_msg = await websocket.receive_json()
+                        hint = client_msg.get("hint") or ""
+                    except WebSocketDisconnect:
+                        hint_queue.put("")
+                        break
+                    hint_queue.put(hint)
+
+                elif event.get("type") == "done":
+                    success = event.get("success", False)
+                    break
+
+                elif event.get("type") == "error":
+                    break
+
+        except WebSocketDisconnect:  # pragma: no cover
             pass  # pragma: no cover
+        finally:
+            duration = round(time.time() - run_start, 2)
+            logger.info(
+                "ws_run_done request_id=%s success=%s duration_s=%s",
+                request_id,
+                success,
+                duration,
+            )
+            try:
+                await websocket.close()
+            except Exception:  # pragma: no cover
+                pass  # pragma: no cover

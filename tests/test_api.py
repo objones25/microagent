@@ -1,4 +1,5 @@
 """Tests for api.py — REST endpoints and WebSocket /ws/run."""
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -8,8 +9,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from api import app
+
+# Ensure no token auth during tests unless a specific test sets it
+os.environ.pop("API_SECRET_TOKEN", None)
 
 client = TestClient(app)
 
@@ -62,7 +67,28 @@ class TestHealth:
     def test_returns_ok(self):
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        assert resp.json()["status"] == "ok"
+
+    def test_health_fields_present(self):
+        resp = client.get("/health")
+        data = resp.json()
+        assert "version" in data
+        assert "uptime_s" in data
+        assert isinstance(data["uptime_s"], float)
+        assert "anthropic_key_set" in data
+        assert isinstance(data["anthropic_key_set"], bool)
+        assert "concurrent_runs" in data
+        assert isinstance(data["concurrent_runs"], int)
+
+    def test_anthropic_key_set_reflects_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        resp = client.get("/health")
+        assert resp.json()["anthropic_key_set"] is True
+
+    def test_anthropic_key_unset(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        resp = client.get("/health")
+        assert resp.json()["anthropic_key_set"] is False
 
 
 class TestConfigDefaults:
@@ -77,6 +103,59 @@ class TestConfigDefaults:
     def test_max_iterations_is_int(self):
         data = client.get("/config/defaults").json()
         assert isinstance(data["max_iterations"], int)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — auth
+# ---------------------------------------------------------------------------
+
+class TestWebSocketAuth:
+    def test_rejected_without_token(self, monkeypatch):
+        monkeypatch.setenv("API_SECRET_TOKEN", "mysecret")
+        with client.websocket_connect("/ws/run") as ws:
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+
+    def test_rejected_with_wrong_token(self, monkeypatch):
+        monkeypatch.setenv("API_SECRET_TOKEN", "mysecret")
+        with client.websocket_connect("/ws/run?token=wrongtoken") as ws:
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+
+    def test_accepted_with_correct_token(self, monkeypatch):
+        monkeypatch.setenv("API_SECRET_TOKEN", "mysecret")
+        loop_patch = patch("api.AgentLoop", return_value=_make_loop_mock(_done_gen()))
+        client_patch = patch("api.anthropic.Anthropic")
+        with loop_patch, client_patch:
+            with client.websocket_connect("/ws/run?token=mysecret") as ws:
+                ws.send_json({"prompt": "do it"})
+                msgs = _recv_all(ws)
+        assert msgs[-1]["type"] == "done"
+
+    def test_no_auth_when_token_not_set(self):
+        # API_SECRET_TOKEN not set → all connections allowed
+        loop_patch = patch("api.AgentLoop", return_value=_make_loop_mock(_done_gen()))
+        client_patch = patch("api.anthropic.Anthropic")
+        with loop_patch, client_patch:
+            with client.websocket_connect("/ws/run") as ws:
+                ws.send_json({"prompt": "do it"})
+                msgs = _recv_all(ws)
+        assert msgs[-1]["type"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — concurrency cap
+# ---------------------------------------------------------------------------
+
+class TestWebSocketConcurrency:
+    def test_at_capacity_rejects(self, monkeypatch):
+        import api as api_module
+        monkeypatch.setattr(api_module._semaphore, "_value", 0)
+        with client.websocket_connect("/ws/run") as ws:
+            ws.send_json({"prompt": "do it"})
+            msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert "capacity" in msg["message"]
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy dependency files and install (no dev extras, uses main deps only)
 COPY pyproject.toml .
+COPY uv.lock .
 RUN uv sync --no-dev --frozen
 
 # ── final stage ──────────────────────────────────────────────────────────────
@@ -26,4 +27,4 @@ COPY . .
 
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 300"]
