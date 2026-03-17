@@ -13,10 +13,13 @@ from starlette.websockets import WebSocketDisconnect
 
 from api import app
 
-# Ensure no token auth during tests unless a specific test sets it
-os.environ.pop("API_SECRET_TOKEN", None)
-
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _no_auth_token(monkeypatch):
+    """Remove API_SECRET_TOKEN before every test; auth tests set it explicitly."""
+    monkeypatch.delenv("API_SECRET_TOKEN", raising=False)
 
 
 # ---------------------------------------------------------------------------

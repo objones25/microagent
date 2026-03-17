@@ -190,11 +190,17 @@ async def websocket_run(websocket: WebSocket):
             except StopIteration:
                 pass
             except Exception as e:
-                event_loop.call_soon_threadsafe(
-                    event_queue.put_nowait, {"type": "error", "message": str(e)}
-                )
+                try:
+                    event_loop.call_soon_threadsafe(
+                        event_queue.put_nowait, {"type": "error", "message": str(e)}
+                    )
+                except RuntimeError:  # pragma: no cover
+                    pass  # event loop already closed (e.g. test teardown)
             finally:
-                event_loop.call_soon_threadsafe(event_queue.put_nowait, None)  # sentinel
+                try:
+                    event_loop.call_soon_threadsafe(event_queue.put_nowait, None)  # sentinel
+                except RuntimeError:  # pragma: no cover
+                    pass  # event loop already closed (e.g. test teardown)
 
         executor_thread = threading.Thread(target=run_agent, daemon=True)
         executor_thread.start()
