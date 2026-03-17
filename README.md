@@ -53,17 +53,21 @@ Or with Docker:
 
 ```bash
 docker build -t microagent-api .
-docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8000:8000 microagent-api
+docker run -e ANTHROPIC_API_KEY=sk-ant-... -e API_SECRET_TOKEN=your-secret -p 8000:8000 microagent-api
 ```
 
 ### REST endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Returns `{"status": "ok"}` — Docker healthcheck |
+| `GET /health` | Returns `status`, `version`, `uptime_s`, `anthropic_key_set`, `concurrent_runs` |
 | `GET /config/defaults` | Returns `model`, `max_iterations`, `prompts_version` defaults |
 
-### WebSocket — `ws://localhost:8000/ws/run`
+### WebSocket — `ws://localhost:8000/ws/run?token=<API_SECRET_TOKEN>`
+
+If `API_SECRET_TOKEN` is set on the server, every connection must include `?token=<secret>` as a query parameter. Connections without a valid token are closed with code 1008. If the variable is unset, all connections are allowed.
+
+
 
 **Start a run** (client → server, once):
 ```json
@@ -105,11 +109,13 @@ Send `null` for no hint.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `FIRECRAWL_API_KEY` | No | Enables web search/scrape tools |
+| `API_SECRET_TOKEN` | No | Shared secret for WebSocket auth (`?token=<secret>`); if unset, all connections allowed |
 | `CORS_ORIGINS` | No | Comma-separated allowed origins (default `*`) |
-| `DEFAULT_MODEL` | No | Override default model |
-| `DEFAULT_MAX_ITERATIONS` | No | Override default max iterations |
-| `DEFAULT_PROMPTS_VERSION` | No | Override default prompts version |
+| `MAX_CONCURRENT_RUNS` | No | Max simultaneous agent runs (default `5`) |
+| `FIRECRAWL_API_KEY` | No | Enables web search/scrape tools |
+| `CONTEXT7_API_KEY` | No | Enables library docs tool |
+| `SENTRY_DSN` | No | Sentry DSN for error tracking; Sentry disabled if unset |
+| `PORT` | No | Port to listen on (Railway injects this automatically; default `8000`) |
 
 ---
 
